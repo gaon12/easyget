@@ -40,9 +40,9 @@ It supports modern features like multithreading, speed limits, resume support, w
 pip install httpx tqdm
 ```
 
-Or go to [Release page](https://github.com/gaon12/easyget/release/latest) and download the latest version. When you using build file, you don't need to install `httpx` and `tqdm`. Also don't add command `python` before `easyget.py`. Just type `easyget` and options.
+Or go to [Release page](https://github.com/gaon12/easyget/releases/latest) and download the latest version. When you using build file, you don't need to install `httpx` and `tqdm`. Also don't add command `python` before `easyget.py`. Just type `easyget` and options.
 
-또는 [릴리즈 페이지](https://github.com/gaon12/easyget/release/latest)에서 최신 버전을 다운로드하세요. 빌드 파일을 사용할 때는 `httpx`와 `tqdm`를 설치할 필요가 없습니다. 또한 `easyget.py` 앞에 `python` 명령을 추가하지 마세요. 그냥 `easyget`과 옵션을 입력하세요.
+또는 [릴리즈 페이지](https://github.com/gaon12/easyget/releases/latest)에서 최신 버전을 다운로드하세요. 빌드 파일을 사용할 때는 `httpx`와 `tqdm`를 설치할 필요가 없습니다. 또한 `easyget.py` 앞에 `python` 명령을 추가하지 마세요. 그냥 `easyget`과 옵션을 입력하세요.
 
 Or you can use `easyget` with `pip`:
 
