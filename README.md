@@ -19,6 +19,9 @@ It supports modern features like multithreading, speed limits, resume support, w
 - ✅ **Progress bars** (total file count and individual download progress)
 - ✅ **Ignore cache** (`--no-cache`, ignore `.part` files)
 - ✅ **Basic auth / Bearer token support**
+- ✅ **Download modes** (`--mode fast` or `accurate`)
+  - `fast` (default): single-threaded, skips HEAD inquiry for speed
+  - `accurate`: prefers HEAD request to get Content-Length and uses multithread when possible
 - ✅ **English/Korean comments and error messages**
 
 - ✅ **wget/curl 스타일 옵션 지원** (`-O`, `-c`, `--limit-rate`)
@@ -30,6 +33,9 @@ It supports modern features like multithreading, speed limits, resume support, w
 - ✅ **진행률 표시** (총 파일 수 및 개별 파일 다운로드)
 - ✅ **캐시 무시 기능** (`--no-cache`, `.part` 파일 무시)
 - ✅ **기본 인증 / Bearer 토큰 지원**
+- ✅ **다운로드 모드** (`--mode fast` 또는 `accurate`)
+  - `fast` (기본값): HEAD 조회를 생략하여 단일 스레드로 빠르게 다운로드
+  - `accurate`: HEAD 요청을 통해 Content-Length를 확인하고, 가능하다면 멀티스레드 다운로드
 - ✅ **영어/한글 주석 및 에러 메시지**
 
 ---
@@ -37,20 +43,12 @@ It supports modern features like multithreading, speed limits, resume support, w
 ## Installation / 설치
 
 ```bash
-pip install httpx tqdm
+pip install httpx tqdm easyget
 ```
 
-Or go to [Release page](https://github.com/gaon12/easyget/releases/latest) and download the latest version. When you using build file, you don't need to install `httpx` and `tqdm`. Also don't add command `python` before `easyget.py`. Just type `easyget` and options.
+Or go to [Release page](https://github.com/gaon12/easyget/releases/latest) and download the latest version. When using the build file, you don't need to install `httpx` and `tqdm`. Also, don't add `python` before `easyget.py`. Just type `easyget` and options.
 
 또는 [릴리즈 페이지](https://github.com/gaon12/easyget/releases/latest)에서 최신 버전을 다운로드하세요. 빌드 파일을 사용할 때는 `httpx`와 `tqdm`를 설치할 필요가 없습니다. 또한 `easyget.py` 앞에 `python` 명령을 추가하지 마세요. 그냥 `easyget`과 옵션을 입력하세요.
-
-Or you can use `easyget` with `pip`:
-
-또는 `pip`을 사용하여 `easyget`을 사용할 수 있습니다:
-
-```bash
-pip install easyget
-```
 
 ---
 
@@ -62,31 +60,37 @@ pip install easyget
 python easyget.py "https://example.com/file.zip"
 ```
 
-### 2. Specify output filename / 파일명 지정
+### 2. Specify mode / 모드 지정 (fast or accurate)
+
+```bash
+python easyget.py --mode accurate "https://example.com/file.zip"
+```
+
+### 3. Specify output filename / 파일명 지정
 
 ```bash
 python easyget.py "https://example.com/file.zip" -O myfile.zip
 ```
 
-### 3. Resume download / 이어받기
+### 4. Resume download / 이어받기
 
 ```bash
 python easyget.py "https://example.com/file.zip" -c
 ```
 
-### 4. Multi-threaded with speed limit / 멀티스레드 + 속도 제한
+### 5. Multi-threaded with speed limit / 멀티스레드 + 속도 제한
 
 ```bash
-python easyget.py "https://example.com/large.iso" --multi 8 --max-speed 2M
+python easyget.py "https://example.com/large.iso" --mode accurate --multi 8 --max-speed 2M
 ```
 
-### 5. Use input file list (txt, csv, tsv) / URL 리스트로 다운로드
+### 6. Use input file list (txt, csv, tsv) / URL 리스트로 다운로드
 
 ```bash
 python easyget.py urls.csv
 ```
 
-### 6. Wildcard in URL / 와일드카드 URL 사용
+### 7. Wildcard in URL / 와일드카드 URL 사용
 
 ```bash
 python easyget.py "https://example.com/files/*.zip"
@@ -125,6 +129,7 @@ https://example.com/file2.zip
 | `--user-agent`           | User-Agent 설정 |
 | `--username`, `--password` | Basic 인증용 계정 정보 |
 | `--token`                | Bearer 토큰 인증 |
+| `--mode`                 | Download mode: `fast` or `accurate` |
 
 ---
 
@@ -144,11 +149,12 @@ https://example.com/file2.zip
 
 This project is licensed under the [MIT License](./LICENSE).
 
-이 프로젝트는 [MIT 라이선스](./LICENSE)를 따릅니다.
+이 프로젝트는 [MIT 라이선스](./LICENSE)를 따릅니다。
 
 ---
 
 ## Contribute / 기여
+
 For questions or improvements, feel free to open an issue or pull request!
 
-기여하고 싶거나 궁금한 점이 있으면 언제든 이슈나 PR을 열어주세요!
+기여하고 싶거나 궁금한 점이 있으면 언제든 이슈나 PR을 열어주세요！
