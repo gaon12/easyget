@@ -25,6 +25,8 @@ Features / 특징:
   다운로드 완료 후 최종 파일명과 파일 용량(바이트 단위)을 출력합니다.
 - Supports a new option to ignore cache (--no-cache) which forces a fresh download.
   새 옵션(--no-cache)을 통해 캐시(이전의 .part 파일)를 무시하고 새로 다운로드할 수 있습니다.
+- Supports two modes: "fast" (single-threaded, skips HEAD) and "accurate" (prefers HEAD).
+  “단일 스레드 빠른 모드”와 “정확한 모드(HEAD 선호)”를 지원합니다. 기본은 fast 모드입니다.
 """
 
 import argparse
@@ -57,7 +59,7 @@ SKIP_ALL = False       # If True, all existing files will be skipped / 모든 �
 logging.basicConfig(
     # format="[%(asctime)s] %(levelname)s: %(message)s",
     format="%(message)s",   # Simplified format / 간소화된 형식
-    level=logging.INFO,  # INFO level logging / 정보 수준 로그
+    level=logging.INFO,     # INFO level logging / 정보 수준 로그
     # level=logging.DEBUG,  # DEBUG level logging (디버깅 수준 로그)
     # level=logging.ERROR,  # ERROR level logging (오류 수준 로그)
     datefmt="%H:%M:%S"
@@ -330,11 +332,12 @@ def safe_rename(tmp_path: str, output: str) -> bool:
 def download_file(url: str, output: str, resume: bool = False, threads: int = DEFAULT_THREADS,
                   max_speed: Optional[str] = None, headers: Optional[Dict[str, str]] = None,
                   progress_position: Optional[int] = None, client: Optional[httpx.Client] = None,
-                  ignore_cache: bool = False) -> None:
+                  ignore_cache: bool = False, mode: str = "fast") -> None:
     """
     Download a file from the given URL, supporting multi-threading, resume functionality,
-    and an option to ignore cache.
-    주어진 URL로부터 파일을 다운로드합니다. 멀티스레드, 이어받기 기능 및 캐시 무시 옵션을 지원합니다.
+    and an option to ignore cache, plus two modes: fast and accurate.
+    주어진 URL로부터 파일을 다운로드합니다. 멀티스레드, 이어받기 기능 및 캐시 무시 옵션을 지원하며,
+    fast/accurate 모드를 추가로 지원합니다.
     
     Parameters / 매개변수:
       - url (str): The URL to download. / 다운로드할 URL
@@ -344,17 +347,17 @@ def download_file(url: str, output: str, resume: bool = False, threads: int = DE
       - max_speed (Optional[str]): Maximum download speed (e.g., "1M", "500K"). / 최대 다운로드 속도
       - headers (Optional[Dict[str, str]]): HTTP headers to use. / 사용할 HTTP 헤더
       - progress_position (Optional[int]): Position for the progress bar (tqdm). / 진행바 표시 위치
-      - client (Optional[httpx.Client]): Optional reusable HTTP client. / 선택 사항: 재사용 가능한 HTTP 클라이언트
-      - ignore_cache (bool): If True, ignore any existing cache (.part file) and force a fresh download.
-                               If enabled, any existing temporary file is removed before starting download.
-                               / True인 경우 기존 캐시(.part 파일)를 무시하고 새로 다운로드합니다.
-                                 활성화되면 기존 임시 파일을 삭제하고 새로 다운로드합니다.
+      - client (Optional[httpx.Client]): Optional reusable HTTP client. / 재사용 가능한 HTTP 클라이언트
+      - ignore_cache (bool): If True, ignore any existing cache (.part file). / 캐시(.part) 무시 여부
+      - mode (str): Download mode: 'fast' for single-threaded fast mode (default),
+                    'accurate' for HEAD-prefer mode.
+                    / 다운로드 모드: 'fast'는 단일 스레드 빠른 모드(기본값),
+                      'accurate'는 HEAD 요청 선호 모드
     """
     headers = headers or {}
     tmp_path = output + ".part"  # Temporary file path / 임시 파일 경로
 
     # If ignore_cache is enabled, remove any existing temporary file
-    # 캐시 무시 옵션이 활성화된 경우, 기존의 임시 파일(.part 파일)을 삭제합니다.
     if ignore_cache and os.path.exists(tmp_path):
         try:
             os.remove(tmp_path)
@@ -362,25 +365,29 @@ def download_file(url: str, output: str, resume: bool = False, threads: int = DE
         except Exception as e:
             logging.error(f"easyget error: Failed to remove cache file {tmp_path}: {e}")
 
-    total_size = get_file_size(url, headers, client=client)  # Get the total file size / 전체 파일 크기 확인
+    # Determine total size based on mode
+    if mode == "accurate":
+        total_size = get_file_size(url, headers, client=client)
+    else:
+        total_size = None  # fast 모드에서는 HEAD 요청을 건너뜁니다.
 
     # If file size is unknown, force single-threaded download
     if total_size is None:
         logging.info("File size unknown. Downloading using a single thread.")
         threads = 1
 
-    # In multi-threaded resume, if resume is enabled, switch to single-thread mode
+    # In multi-threaded resume, if resume is enabled, switch to single thread
     if resume and threads > 1:
         logging.warning("easyget error: Resume feature may not work properly in multi-threaded mode. Switching to single thread.")
         threads = 1
 
     downloaded_size = 0
-    mode = 'wb'
+    mode_flag = 'wb'
     if resume and os.path.exists(tmp_path):
         downloaded_size = os.path.getsize(tmp_path)
         if total_size and downloaded_size < total_size:
             headers['Range'] = f'bytes={downloaded_size}-'
-            mode = 'ab'
+            mode_flag = 'ab'
         elif total_size and downloaded_size >= total_size:
             logging.info("The file appears to be fully downloaded already.")
             if safe_rename(tmp_path, output):
@@ -409,7 +416,7 @@ def download_file(url: str, output: str, resume: bool = False, threads: int = DE
                 if resp.status_code >= 400:
                     logging.error(f"easyget error: HTTP error {resp.status_code} when downloading {url}")
                     return
-                with open(tmp_path, mode) as f, tqdm(
+                with open(tmp_path, mode_flag) as f, tqdm(
                     total=total_size, initial=downloaded_size, unit='B', unit_scale=True,
                     desc=output, position=progress_position, leave=False
                 ) as pbar:
@@ -477,14 +484,7 @@ def parse_file_list(file_path: str) -> List[Tuple[str, str]]:
     txt 파일의 경우 각 줄을 URL로 처리합니다.
     
     For csv/tsv files, use the "url" column and the "filename" column (if available).
-    csv/tsv 파일의 경우 "url" 컬럼과 "filename" 컬럼(존재할 경우)을 사용합니다.
-    
-    Parameters / 매개변수:
-      - file_path (str): Path to the input file. / 입력 파일 경로
-      
-    Returns / 반환값:
-      - List[Tuple[str, str]]: A list of tuples, each containing a URL and its corresponding filename.
-                                / 각 튜플이 URL과 해당 파일명을 포함하는 리스트
+    csv/tsv 파일의 경우 "url" 컬럼과 "filename" 컬럼(존재할 경우)을 사용합니다。
     """
     file_list: List[Tuple[str, str]] = []
     ext = os.path.splitext(file_path)[1].lower()  # Get the file extension / 파일 확장자 추출
@@ -514,7 +514,7 @@ def parse_file_list(file_path: str) -> List[Tuple[str, str]]:
 def expand_wildcard_url(url: str, headers: Dict[str, str], client: httpx.Client) -> List[Tuple[str, str]]:
     """
     If the URL contains an asterisk (*), expand it by retrieving the directory listing and matching the pattern.
-    URL에 에스터리스크(*)가 포함된 경우, 디렉토리 목록을 가져와 패턴과 일치하는 파일 링크를 확장합니다.
+    URL에 에스터리스크(*)가 포함된 경우, 디렉토리 목록을 가져와 패턴과 일치하는 파일 링크를 확장합니다。
     
     For example, given: http://example.com/files/*.zip
     예를 들어: http://example.com/files/*.zip
@@ -555,7 +555,7 @@ def expand_wildcard_url(url: str, headers: Dict[str, str], client: httpx.Client)
 def main() -> None:
     """
     Main function that parses command-line arguments and initiates the download process.
-    명령행 인수를 파싱하고 다운로드 프로세스를 시작하는 메인 함수입니다.
+    명령행 인수를 파싱하고 다운로드 프로세스를 시작하는 메인 함수입니다。
     """
     parser = argparse.ArgumentParser(description="easyget: wget/curl compatible file downloader")
     parser.add_argument("input", help="URL to download or a file path (txt, csv, tsv) containing URLs (supports wildcard *)")
@@ -569,9 +569,10 @@ def main() -> None:
     parser.add_argument("--password", help="Password for basic authentication")
     parser.add_argument("--token", help="Bearer token for authentication")
     parser.add_argument("--header", action="append", help="Additional HTTP header (format: key:value)")
-    # New option: ignore cache / 새 옵션: 캐시 무시 (이전 다운로드된 .part 파일 무시)
     parser.add_argument("--no-cache", action="store_true", help="Ignore cached partial downloads and force a fresh download (ignore .part files)")
-    
+    parser.add_argument("--mode", choices=["fast", "accurate"], default="fast",
+                        help="Download mode: 'fast' for single-threaded fast mode (default), 'accurate' for HEAD-prefer mode")
+
     args = parser.parse_args()
     args = alias_wget_style(args)
     args = alias_wget_curl_style(args)
@@ -602,9 +603,17 @@ def main() -> None:
                 sys.exit(1)
             global_pbar = tqdm(total=len(file_list), desc="Total Files", position=0)
             for url, output in file_list:
-                download_file(url, output, resume=args.resume, threads=args.multi,
-                              max_speed=args.max_speed, headers=headers, progress_position=1, client=client,
-                              ignore_cache=args.no_cache)
+                download_file(
+                    url, output,
+                    resume=args.resume,
+                    threads=args.multi,
+                    max_speed=args.max_speed or args.limit_rate,
+                    headers=headers,
+                    progress_position=1,
+                    client=client,
+                    ignore_cache=args.no_cache,
+                    mode=args.mode
+                )
                 global_pbar.update(1)
             global_pbar.close()
         # If the input URL contains a wildcard (*) expand it / URL에 와일드카드(*)가 포함된 경우 확장
@@ -615,18 +624,34 @@ def main() -> None:
                 sys.exit(1)
             global_pbar = tqdm(total=len(file_list), desc="Total Files", position=0)
             for url, output in file_list:
-                download_file(url, output, resume=args.resume, threads=args.multi,
-                              max_speed=args.max_speed, headers=headers, progress_position=1, client=client,
-                              ignore_cache=args.no_cache)
+                download_file(
+                    url, output,
+                    resume=args.resume,
+                    threads=args.multi,
+                    max_speed=args.max_speed or args.limit_rate,
+                    headers=headers,
+                    progress_position=1,
+                    client=client,
+                    ignore_cache=args.no_cache,
+                    mode=args.mode
+                )
                 global_pbar.update(1)
             global_pbar.close()
         else:
             # Single URL download / 단일 URL 다운로드
             url = args.input
             output = args.output or get_filename_from_url(url)
-            download_file(url, output, resume=args.resume, threads=args.multi,
-                          max_speed=args.max_speed, headers=headers, progress_position=0, client=client,
-                          ignore_cache=args.no_cache)
+            download_file(
+                url, output,
+                resume=args.resume,
+                threads=args.multi,
+                max_speed=args.max_speed or args.limit_rate,
+                headers=headers,
+                progress_position=0,
+                client=client,
+                ignore_cache=args.no_cache,
+                mode=args.mode
+            )
 
 
 if __name__ == "__main__":
