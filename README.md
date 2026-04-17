@@ -48,9 +48,9 @@ It supports modern features like multithreading, speed limits, resume support, w
 pip install easyget
 ```
 
-`easyget` is a zero-dependency tool that works with the Python 3.7+ standard library. Or go to [Release page](https://github.com/gaon12/easyget/releases/latest) and download the latest version.
+`easyget` is a zero-dependency tool that works with the Python 3.12+ standard library. Or go to [Release page](https://github.com/gaon12/easyget/releases/latest) and download the latest version.
 
-`easyget`은 Python 3.7+ 표준 라이브러리만 사용하는 무의존성(zero-dependency) 도구입니다. 또는 [릴리즈 페이지](https://github.com/gaon12/easyget/releases/latest)에서 최신 버전을 다운로드하세요.
+`easyget`은 Python 3.12+ 표준 라이브러리만 사용하는 무의존성(zero-dependency) 도구입니다. 또는 [릴리즈 페이지](https://github.com/gaon12/easyget/releases/latest)에서 최신 버전을 다운로드하세요.
 
 ---
 
