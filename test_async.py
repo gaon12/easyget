@@ -82,6 +82,33 @@ class TestAsyncAPI(unittest.TestCase):
         with self.assertRaises(ValueError):
             easyget.AsyncSession(max_concurrency=0)
 
+    def test_async_session_forwards_transport_kwargs(self):
+        async def run():
+            sync_session = MagicMock()
+            response = easyget.Response(status_code=200, headers={}, url="https://example.com")
+            response._content = b"ok"
+            sync_session.request.return_value = response
+
+            async with easyget.AsyncSession(session=sync_session) as session:
+                resp = await session.get(
+                    "https://example.com",
+                    verify=False,
+                    cert=("client.crt", "client.key"),
+                    proxies={"https": "http://proxy.local:8080"},
+                    compressed=True,
+                    timeout=(1, 2),
+                )
+                self.assertEqual(await resp.read(), b"ok")
+
+            kwargs = sync_session.request.call_args.kwargs
+            self.assertFalse(kwargs["verify"])
+            self.assertEqual(kwargs["cert"], ("client.crt", "client.key"))
+            self.assertEqual(kwargs["proxies"], {"https": "http://proxy.local:8080"})
+            self.assertTrue(kwargs["compressed"])
+            self.assertEqual(kwargs["timeout"], (1, 2))
+
+        asyncio.run(run())
+
 
 if __name__ == "__main__":
     unittest.main()
