@@ -1,20 +1,36 @@
+import json as jsonlib
+import http.cookiejar
+import urllib.error
 import urllib.request
 import urllib.parse
-from typing import Dict, Optional, Any, Union
+from typing import Dict, Optional, Any, Union, Sequence, Tuple
 from .models import Response
+
+TimeoutType = Optional[Union[int, float, Tuple[Optional[float], Optional[float]]]]
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
 
 class Session:
     """
     HTTP Session to manage headers, cookies, etc.
     """
-    def __init__(self):
+    def __init__(self, headers: Optional[Dict[str, str]] = None):
         self.headers: Dict[str, str] = {
             'User-Agent': 'easyget/1.0.1'
         }
-        self.cookies = {} # Placeholder for cookie management
+        if headers:
+            self.headers.update(headers)
+        self.cookies = http.cookiejar.CookieJar()
+        cookie_processor = urllib.request.HTTPCookieProcessor(self.cookies)
+        self._opener = urllib.request.build_opener(cookie_processor)
+        self._opener_no_redirect = urllib.request.build_opener(cookie_processor, _NoRedirectHandler())
         self._open_responses = set()
 
-    def _build_url(self, url: str, params: Optional[Dict[str, Any]] = None) -> str:
+    def _build_url(self, url: str, params: Optional[Union[Dict[str, Any], Sequence[Tuple[str, Any]]]] = None) -> str:
         if not params:
             return url
 
@@ -26,7 +42,31 @@ class Session:
         return urllib.parse.urlunsplit((split.scheme, split.netloc, split.path, merged_query, split.fragment))
 
     @staticmethod
-    def _normalize_data(data: Optional[Any], req_headers: Dict[str, str]) -> Optional[Union[bytes, bytearray]]:
+    def _normalize_timeout(timeout: TimeoutType) -> Optional[float]:
+        if isinstance(timeout, tuple):
+            if len(timeout) != 2:
+                raise ValueError("timeout tuple must be (connect_timeout, read_timeout)")
+            connect_timeout, read_timeout = timeout
+            if read_timeout is not None:
+                return float(read_timeout)
+            if connect_timeout is not None:
+                return float(connect_timeout)
+            return None
+        if timeout is None:
+            return None
+        return float(timeout)
+
+    @staticmethod
+    def _normalize_data(
+        data: Optional[Any],
+        json: Optional[Any],
+        req_headers: Dict[str, str],
+    ) -> Optional[Union[bytes, bytearray]]:
+        if data is not None and json is not None:
+            raise TypeError("cannot use both 'data' and 'json' in the same request")
+        if json is not None:
+            req_headers.setdefault("Content-Type", "application/json")
+            return jsonlib.dumps(json).encode("utf-8")
         if data is None:
             return None
         if isinstance(data, (bytes, bytearray)):
@@ -40,22 +80,27 @@ class Session:
         raise TypeError(f"Unsupported request body type: {type(data).__name__}")
 
     def request(self, method: str, url: str, 
-                params: Optional[Dict[str, Any]] = None,
+                params: Optional[Union[Dict[str, Any], Sequence[Tuple[str, Any]]]] = None,
                 data: Optional[Any] = None,
+                json: Optional[Any] = None,
                 headers: Optional[Dict[str, str]] = None,
-                timeout: int = 30,
-                stream: bool = False) -> Response:
+                timeout: TimeoutType = 30,
+                stream: bool = False,
+                allow_redirects: bool = True) -> Response:
+        method = method.upper()
         url = self._build_url(url, params=params)
             
         req_headers = self.headers.copy()
         if headers:
             req_headers.update(headers)
-        req_data = self._normalize_data(data, req_headers)
+        req_data = self._normalize_data(data, json, req_headers)
+        normalized_timeout = self._normalize_timeout(timeout)
         req = urllib.request.Request(url, data=req_data, headers=req_headers, method=method)
+        opener = self._opener if allow_redirects else self._opener_no_redirect
         
         try:
             # We must be careful with 'with' if we want to stream
-            resp = urllib.request.urlopen(req, timeout=timeout)
+            resp = opener.open(req, timeout=normalized_timeout)
             response = Response(status_code=resp.status, headers=dict(resp.headers), url=url)
             
             if stream:
@@ -74,7 +119,7 @@ class Session:
             else:
                 response._content = e.read()
             return response
-        except Exception as e:
+        except urllib.error.URLError as e:
             from .exceptions import DownloadError
             raise DownloadError(f"Request failed: {e}")
 
@@ -86,6 +131,18 @@ class Session:
 
     def head(self, url: str, **kwargs) -> Response:
         return self.request('HEAD', url, **kwargs)
+
+    def put(self, url: str, data: Any = None, **kwargs) -> Response:
+        return self.request('PUT', url, data=data, **kwargs)
+
+    def patch(self, url: str, data: Any = None, **kwargs) -> Response:
+        return self.request('PATCH', url, data=data, **kwargs)
+
+    def delete(self, url: str, **kwargs) -> Response:
+        return self.request('DELETE', url, **kwargs)
+
+    def options(self, url: str, **kwargs) -> Response:
+        return self.request('OPTIONS', url, **kwargs)
 
     def close(self):
         for response in list(self._open_responses):
@@ -99,6 +156,27 @@ class Session:
         self.close()
         return False
 
-def get(url: str, **kwargs) -> Response:
+def request(method: str, url: str, **kwargs) -> Response:
     with Session() as s:
-        return s.get(url, **kwargs)
+        return s.request(method, url, **kwargs)
+
+def get(url: str, **kwargs) -> Response:
+    return request("GET", url, **kwargs)
+
+def post(url: str, **kwargs) -> Response:
+    return request("POST", url, **kwargs)
+
+def put(url: str, **kwargs) -> Response:
+    return request("PUT", url, **kwargs)
+
+def patch(url: str, **kwargs) -> Response:
+    return request("PATCH", url, **kwargs)
+
+def delete(url: str, **kwargs) -> Response:
+    return request("DELETE", url, **kwargs)
+
+def head(url: str, **kwargs) -> Response:
+    return request("HEAD", url, **kwargs)
+
+def options(url: str, **kwargs) -> Response:
+    return request("OPTIONS", url, **kwargs)

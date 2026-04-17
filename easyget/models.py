@@ -45,6 +45,15 @@ class Response:
     def json(self):
         return json.loads(self.text)
 
+    @property
+    def ok(self) -> bool:
+        return 200 <= self.status_code < 400
+
+    @property
+    def status(self) -> int:
+        # aiohttp compatibility alias
+        return self.status_code
+
     def iter_bytes(self, chunk_size: int = 1024) -> Iterator[bytes]:
         if self._content is not None:
             for idx in range(0, len(self._content), chunk_size):
@@ -75,3 +84,10 @@ class Response:
         if 400 <= self.status_code < 600:
             from .exceptions import DownloadError
             raise DownloadError(f"HTTP Error: {self.status_code} for url: {self.url}")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+        return False
