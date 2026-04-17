@@ -3,6 +3,7 @@ import sys
 import logging
 import base64
 import os
+import json
 from typing import Dict, List, Tuple
 
 from .logging_utils import setup_logging
@@ -10,6 +11,7 @@ from .utils import get_filename_from_url, ProgressBar
 from .input_parser import parse_file_list
 from .wildcard import expand_wildcard_url
 from .downloader import download_file
+from .session import Session
 
 DEFAULT_THREADS = 4
 
@@ -34,8 +36,97 @@ def parse_args():
     parser.add_argument("-q", "--quiet", action="store_true", help="Quiet mode (no output)")
     parser.add_argument("--json", action="store_true", help="Output results in JSON format")
     parser.add_argument("-v", "--verbose", action="store_true", help="Display debug logs")
+    parser.add_argument("-X", "--request-method", help="HTTP method for request mode (e.g., GET, POST, PUT)")
+    parser.add_argument("-d", "--data", dest="request_data", help="HTTP request body for request mode")
+    parser.add_argument("--json-data", help="JSON request body string for request mode")
+    parser.add_argument("-I", "--head", dest="head_only", action="store_true", help="Use HTTP HEAD in request mode")
+    parser.add_argument("-L", "--location", action="store_true", help="Follow redirects in request mode")
+    parser.add_argument("--fail", dest="fail_http", action="store_true", help="Fail on HTTP 4xx/5xx in request mode")
+    parser.add_argument("-i", "--include", dest="include_headers", action="store_true", help="Include response headers in output")
+    parser.add_argument("--timeout", type=float, default=30.0, help="HTTP timeout (seconds) for request mode")
 
     return parser.parse_args()
+
+def is_request_mode(args: argparse.Namespace) -> bool:
+    return any([
+        args.request_method,
+        args.request_data is not None,
+        args.json_data is not None,
+        args.head_only,
+        args.location,
+        args.fail_http,
+        args.include_headers,
+    ])
+
+def run_request_mode(args: argparse.Namespace, headers: Dict[str, str]) -> int:
+    if os.path.exists(args.input) and args.input.lower().endswith(('.txt', '.csv', '.tsv')):
+        raise ValueError("Request mode does not support URL list files. Provide a single URL.")
+    if '*' in args.input:
+        raise ValueError("Request mode does not support wildcard URLs. Provide a single URL.")
+
+    if args.request_method:
+        method = args.request_method.upper()
+    elif args.head_only:
+        method = "HEAD"
+    elif args.request_data is not None or args.json_data is not None:
+        method = "POST"
+    else:
+        method = "GET"
+
+    json_payload = None
+    if args.json_data is not None:
+        try:
+            json_payload = json.loads(args.json_data)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON in --json-data: {e}") from e
+
+    with Session() as session:
+        response = session.request(
+            method=method,
+            url=args.input,
+            data=args.request_data,
+            json=json_payload,
+            headers=headers,
+            timeout=args.timeout,
+            allow_redirects=args.location,
+            stream=False,
+        )
+
+    if args.fail_http:
+        response.raise_for_status()
+
+    body_bytes = b"" if method == "HEAD" else response.content
+
+    if args.output:
+        out_dir = os.path.dirname(args.output)
+        if out_dir and not os.path.exists(out_dir):
+            os.makedirs(out_dir, exist_ok=True)
+        with open(args.output, "wb") as f:
+            f.write(body_bytes)
+
+    if args.json:
+        payload = {
+            "url": response.url,
+            "method": method,
+            "status": response.status_code,
+            "headers": response.headers,
+            "output": args.output,
+            "body": None if args.output else response.text,
+        }
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.include_headers:
+        print(f"HTTP {response.status_code}")
+        for key, value in response.headers.items():
+            print(f"{key}: {value}")
+        print()
+
+    if not args.output and body_bytes:
+        sys.stdout.write(response.text)
+        if not response.text.endswith("\n"):
+            sys.stdout.write("\n")
+    return 0
 
 def main():
     args = parse_args()
@@ -60,8 +151,13 @@ def main():
             if ':' in h:
                 key, value = h.split(':', 1)
                 headers[key.strip()] = value.strip()
+    if args.head_only:
+        args.request_method = "HEAD"
 
     try:
+        if is_request_mode(args):
+            sys.exit(run_request_mode(args, headers))
+
         file_list: List[Tuple[str, str]] = []
         if os.path.exists(args.input) and args.input.lower().endswith(('.txt', '.csv', '.tsv')):
             file_list = parse_file_list(args.input)
