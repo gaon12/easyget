@@ -1,13 +1,14 @@
 import unittest
 import importlib
+import io
+import tempfile
 from unittest.mock import MagicMock, patch, mock_open
-import os
 import threading
-import urllib.request
-import logging
 
 from easyget.downloader import download_file, download_range
 from easyget.utils import parse_speed, SpeedLimiter, safe_rename, ProgressBar
+from easyget.models import Response
+from easyget.exceptions import DownloadError
 
 class TestEasyGet(unittest.TestCase):
 
@@ -20,19 +21,20 @@ class TestEasyGet(unittest.TestCase):
         self.assertEqual(parse_speed("500K"), 500 * 1024)
         self.assertIsNone(parse_speed("invalid"))
 
-    @patch("urllib.request.urlopen")
-    def test_download_range_checks_206(self, mock_urlopen):
-        # Mock response
-        mock_response = MagicMock()
-        mock_response.status = 200 # ERROR: should be 206
-        mock_urlopen.return_value.__enter__.return_value = mock_response
-        
+    @patch("easyget.downloader.Session")
+    def test_download_range_checks_206(self, mock_session_cls):
+        response = Response(status_code=200, headers={}, url="http://example.com")
+        response._stream_response = io.BytesIO(b"abc")
+        mock_session = MagicMock()
+        mock_session.get.return_value = response
+        mock_session_cls.return_value = mock_session
+
         error_event = threading.Event()
         pbar = MagicMock()
-        
+
         with patch("builtins.open", mock_open()):
             download_range("http://example.com", 0, 100, {}, "dummy.part", pbar, None, error_event)
-        
+
         self.assertTrue(error_event.is_set())
 
     def test_speed_limiter(self):
@@ -58,6 +60,67 @@ class TestEasyGet(unittest.TestCase):
         pbar = ProgressBar(1000, desc="Test")
         pbar.update(500)
         pbar.close()
+
+    @patch("easyget.downloader.Session")
+    def test_download_file_raises_on_http_error(self, mock_session_cls):
+        response = Response(status_code=404, headers={}, url="http://example.com/file.txt")
+        response._stream_response = io.BytesIO(b"not found")
+        mock_session = MagicMock()
+        mock_session.get.return_value = response
+        mock_session_cls.return_value = mock_session
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = f"{tmpdir}/out.txt"
+            with self.assertRaises(DownloadError):
+                download_file(
+                    "http://example.com/file.txt",
+                    output=output,
+                    retries=0,
+                    show_progress=False,
+                )
+
+    @patch("easyget.downloader.Session")
+    def test_skip_existing_avoids_network_request(self, mock_session_cls):
+        mock_session = MagicMock()
+        mock_session_cls.return_value = mock_session
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = f"{tmpdir}/already.txt"
+            with open(output, "wb") as f:
+                f.write(b"existing")
+
+            download_file(
+                "http://example.com/file.txt",
+                output=output,
+                skip_existing=True,
+                retries=0,
+                show_progress=False,
+            )
+
+        mock_session.get.assert_not_called()
+
+    @patch("easyget.downloader.get_file_info", side_effect=AssertionError("fast mode should not probe metadata"))
+    @patch("easyget.downloader.Session")
+    def test_fast_mode_skips_file_info_probe(self, mock_session_cls, mock_get_file_info):
+        response = Response(status_code=200, headers={}, url="http://example.com/file.txt")
+        response._stream_response = io.BytesIO(b"abc")
+        mock_session = MagicMock()
+        mock_session.get.return_value = response
+        mock_session_cls.return_value = mock_session
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = f"{tmpdir}/saved.txt"
+            download_file(
+                "http://example.com/file.txt",
+                output=output,
+                mode="fast",
+                retries=0,
+                show_progress=False,
+            )
+            with open(output, "rb") as f:
+                self.assertEqual(f.read(), b"abc")
+
+        mock_get_file_info.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()

@@ -5,7 +5,15 @@ import urllib.request
 import urllib.error
 from typing import Optional, Dict, Tuple
 from .exceptions import EasyGetError, DownloadError, IntegrityError
-from .utils import ProgressBar, SpeedLimiter, safe_rename, parse_speed, get_filename_from_headers
+from .utils import (
+    ProgressBar,
+    SpeedLimiter,
+    safe_rename,
+    parse_speed,
+    get_filename_from_headers,
+    get_filename_from_url,
+    should_download_output,
+)
 
 from .session import Session
 from .models import Response
@@ -100,33 +108,48 @@ def download_file(url: str, output: Optional[str] = None, resume: bool = False, 
     Main orchestrator for downloading a single file with retries and integrity checks.
     """
     import time
-    headers = dict(headers or {})
+    base_headers = dict(headers or {})
     
     # Retry loop
     attempt = 0
     session = Session()
     while attempt <= retries:
         try:
-            # Get file info (size, range support, ETag, etc.)
-            total_size, range_supported, info_headers = get_file_info(url, headers, session=session)
-            
-            # 1. Determine final output filename if not provided
-            if not output:
-                output = get_filename_from_headers(info_headers, url)
+            request_headers = dict(base_headers)
+            attempt_threads = threads
+            output_was_provided = output is not None
+            total_size = None
+            range_supported = False
+            info_headers: Dict[str, str] = {}
+            resolved_output = output if output_was_provided else get_filename_from_url(url)
+
+            should_probe = mode == "accurate" or attempt_threads > 1 or resume
+            if should_probe:
+                # Get file info (size, range support, ETag, etc.)
+                total_size, range_supported, info_headers = get_file_info(url, request_headers, session=session)
+                if not output_was_provided:
+                    resolved_output = get_filename_from_headers(info_headers, url)
             
             # 2. Auto-create directory
-            out_dir = os.path.dirname(output)
+            out_dir = os.path.dirname(resolved_output)
             if out_dir and not os.path.exists(out_dir):
                 os.makedirs(out_dir, exist_ok=True)
+
+            # Skip/overwrite policy must be handled before any network download.
+            if not should_download_output(resolved_output, force=force, skip_existing=skip_existing):
+                return
                 
-            tmp_path = output + ".part"
+            tmp_path = resolved_output + ".part"
             if ignore_cache and os.path.exists(tmp_path):
                 os.remove(tmp_path)
 
             # Validation for multi-threading
-            if threads > 1 and not range_supported:
+            if attempt_threads > 1 and not range_supported:
                 logging.debug(f"Server does not support Range for {url}. Falling back to single-threaded.")
-                threads = 1
+                attempt_threads = 1
+            if attempt_threads > 1 and not total_size:
+                logging.debug(f"Unknown content length for {url}. Falling back to single-threaded.")
+                attempt_threads = 1
 
             downloaded_size = 0
             mode_flag = 'wb'
@@ -134,27 +157,29 @@ def download_file(url: str, output: Optional[str] = None, resume: bool = False, 
             if resume and os.path.exists(tmp_path):
                 downloaded_size = os.path.getsize(tmp_path)
                 if total_size and downloaded_size >= total_size:
-                    if safe_rename(tmp_path, output, force, skip_existing):
-                        logging.info(f"File already complete: {output}")
+                    if safe_rename(tmp_path, resolved_output, force, skip_existing):
+                        logging.info(f"File already complete: {resolved_output}")
                     return
                 
-                if threads > 1:
+                if attempt_threads > 1:
                     logging.debug("Resuming multi-threaded download is not fully supported. Falling back to single-threaded.")
-                    threads = 1
+                    attempt_threads = 1
                     
-                headers['Range'] = f'bytes={downloaded_size}-'
+                request_headers['Range'] = f'bytes={downloaded_size}-'
                 mode_flag = 'ab'
 
             parsed_speed = parse_speed(max_speed) if max_speed else None
             limiter = SpeedLimiter(parsed_speed) if parsed_speed else None
 
-            pbar = ProgressBar(total_size, desc=os.path.basename(output)[:20], position=progress_position) if show_progress else None
+            pbar = ProgressBar(total_size, desc=os.path.basename(resolved_output)[:20], position=progress_position) if show_progress else None
             if pbar and downloaded_size > 0: pbar.update(downloaded_size)
 
-            if threads == 1:
-                response = session.get(url, headers=headers, stream=True)
+            if attempt_threads == 1:
+                response = session.get(url, headers=request_headers, stream=True)
                 if resume and downloaded_size > 0 and response.status_code != 206:
                     raise IntegrityError(f"Server does not support resume for {url} (Status: {response.status_code}).")
+                if not (resume and downloaded_size > 0):
+                    response.raise_for_status()
                 
                 with open(tmp_path, mode_flag) as f:
                     for chunk in response.iter_bytes(CHUNK_SIZE):
@@ -168,15 +193,15 @@ def download_file(url: str, output: Optional[str] = None, resume: bool = False, 
                 
                 error_event = threading.Event()
                 range_list = []
-                part_size = total_size // threads
-                for i in range(threads):
+                part_size = total_size // attempt_threads
+                for i in range(attempt_threads):
                     start = i * part_size
-                    end = total_size - 1 if i == threads - 1 else (start + part_size - 1)
+                    end = total_size - 1 if i == attempt_threads - 1 else (start + part_size - 1)
                     range_list.append((start, end))
                 
                 thread_pool = []
                 for start, end in range_list:
-                    t = threading.Thread(target=download_range, args=(url, start, end, headers, tmp_path, pbar, limiter, error_event, session))
+                    t = threading.Thread(target=download_range, args=(url, start, end, request_headers, tmp_path, pbar, limiter, error_event, session))
                     thread_pool.append(t)
                     t.start()
                 
@@ -185,10 +210,12 @@ def download_file(url: str, output: Optional[str] = None, resume: bool = False, 
                     raise DownloadError(f"One or more threads failed for {url}")
 
             if pbar: pbar.close()
-            if not safe_rename(tmp_path, output, force, skip_existing):
-                raise DownloadError(f"Failed to save {output}")
+            if not safe_rename(tmp_path, resolved_output, force, skip_existing):
+                if not os.path.exists(tmp_path):
+                    return
+                raise DownloadError(f"Failed to save {resolved_output}")
             
-            logging.info(f"Successfully downloaded: {output}")
+            logging.info(f"Successfully downloaded: {resolved_output}")
             return
 
         except (urllib.error.URLError, DownloadError, IntegrityError, TimeoutError) as e:
