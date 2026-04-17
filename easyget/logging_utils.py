@@ -19,11 +19,3 @@ def setup_logging(verbose: bool = False, quiet: bool = False):
         formatter = logging.Formatter("%(message)s")
         handler.setFormatter(formatter)
         root_logger.addHandler(handler)
-    
-    # Suppress httpx and httpcore logging
-    if not verbose:
-        logging.getLogger("httpx").setLevel(logging.WARNING)
-        logging.getLogger("httpcore").setLevel(logging.WARNING)
-    else:
-        logging.getLogger("httpx").setLevel(logging.DEBUG)
-        logging.getLogger("httpcore").setLevel(logging.DEBUG)
