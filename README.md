@@ -43,12 +43,12 @@ It supports modern features like multithreading, speed limits, resume support, w
 ## Installation / 설치
 
 ```bash
-pip install httpx tqdm easyget
+pip install easyget
 ```
 
-Or go to [Release page](https://github.com/gaon12/easyget/releases/latest) and download the latest version. When using the build file, you don't need to install `httpx` and `tqdm`. Also, don't add `python` before `easyget.py`. Just type `easyget` and options.
+`easyget` is a zero-dependency tool that works with the Python 3.12+ standard library. Or go to [Release page](https://github.com/gaon12/easyget/releases/latest) and download the latest version.
 
-또는 [릴리즈 페이지](https://github.com/gaon12/easyget/releases/latest)에서 최신 버전을 다운로드하세요. 빌드 파일을 사용할 때는 `httpx`와 `tqdm`를 설치할 필요가 없습니다. 또한 `easyget.py` 앞에 `python` 명령을 추가하지 마세요. 그냥 `easyget`과 옵션을 입력하세요.
+`easyget`은 Python 3.12+ 표준 라이브러리만 사용하는 무의존성(zero-dependency) 도구입니다. 또는 [릴리즈 페이지](https://github.com/gaon12/easyget/releases/latest)에서 최신 버전을 다운로드하세요.
 
 ---
 
