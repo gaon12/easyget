@@ -3,6 +3,7 @@ import base64
 import http.cookiejar
 import mimetypes
 import os
+import ssl
 import urllib.error
 import urllib.request
 import urllib.parse
@@ -11,6 +12,9 @@ from uuid import uuid4
 from .models import Response
 
 TimeoutType = Optional[Union[int, float, Tuple[Optional[float], Optional[float]]]]
+VerifyType = Union[bool, str, os.PathLike[str]]
+CertType = Union[str, os.PathLike[str], Tuple[Union[str, os.PathLike[str]], Union[str, os.PathLike[str]]]]
+ProxyType = Union[str, Dict[str, str]]
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -22,17 +26,97 @@ class Session:
     """
     HTTP Session to manage headers, cookies, etc.
     """
-    def __init__(self, headers: Optional[Dict[str, str]] = None):
+    def __init__(
+        self,
+        headers: Optional[Dict[str, str]] = None,
+        verify: VerifyType = True,
+        cert: Optional[CertType] = None,
+        proxies: Optional[ProxyType] = None,
+    ):
         self.headers: Dict[str, str] = {
             'User-Agent': 'easyget/1.0.1'
         }
         if headers:
             self.headers.update(headers)
+        self._default_verify: VerifyType = verify
+        self._default_cert: Optional[CertType] = cert
+        self._default_proxies: Optional[ProxyType] = proxies
         self.cookies = http.cookiejar.CookieJar()
-        cookie_processor = urllib.request.HTTPCookieProcessor(self.cookies)
-        self._opener = urllib.request.build_opener(cookie_processor)
-        self._opener_no_redirect = urllib.request.build_opener(cookie_processor, _NoRedirectHandler())
+        self._opener = self._build_transport_opener(
+            allow_redirects=True,
+            verify=self._default_verify,
+            cert=self._default_cert,
+            proxies=self._default_proxies,
+        )
+        self._opener_no_redirect = self._build_transport_opener(
+            allow_redirects=False,
+            verify=self._default_verify,
+            cert=self._default_cert,
+            proxies=self._default_proxies,
+        )
         self._open_responses = set()
+
+    @staticmethod
+    def _normalize_proxy_map(proxies: Optional[ProxyType]) -> Optional[Dict[str, str]]:
+        if proxies is None:
+            return None
+        if isinstance(proxies, str):
+            return {"http": proxies, "https": proxies}
+        if isinstance(proxies, dict):
+            return {str(k): str(v) for k, v in proxies.items()}
+        raise TypeError("proxies must be a mapping or string URL")
+
+    @staticmethod
+    def _build_ssl_context(
+        verify: VerifyType,
+        cert: Optional[CertType],
+    ) -> Optional[ssl.SSLContext]:
+        needs_context = cert is not None or verify is False or isinstance(verify, (str, os.PathLike))
+        if not needs_context:
+            return None
+
+        context = ssl.create_default_context()
+
+        if verify is False:
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+        elif isinstance(verify, (str, os.PathLike)):
+            context.load_verify_locations(cafile=str(verify))
+        elif verify is not True:
+            raise TypeError("verify must be bool or path-like")
+
+        if cert is not None:
+            if isinstance(cert, tuple):
+                if len(cert) != 2:
+                    raise TypeError("cert tuple must be (certfile, keyfile)")
+                certfile, keyfile = cert
+                context.load_cert_chain(certfile=str(certfile), keyfile=str(keyfile))
+            else:
+                context.load_cert_chain(certfile=str(cert))
+
+        return context
+
+    def _build_transport_opener(
+        self,
+        allow_redirects: bool,
+        verify: VerifyType,
+        cert: Optional[CertType],
+        proxies: Optional[ProxyType],
+    ):
+        handlers: List[Any] = [urllib.request.HTTPCookieProcessor(self.cookies)]
+
+        proxy_map = self._normalize_proxy_map(proxies)
+        if proxy_map is not None:
+            handlers.append(urllib.request.ProxyHandler(proxy_map))
+
+        context = self._build_ssl_context(verify=verify, cert=cert)
+        if context is not None:
+            handlers.append(urllib.request.HTTPSHandler(context=context))
+
+        if not allow_redirects:
+            handlers.append(_NoRedirectHandler())
+
+        return urllib.request.build_opener(*handlers)
 
     def _build_url(self, url: str, params: Optional[Union[Dict[str, Any], Sequence[Tuple[str, Any]]]] = None) -> str:
         if not params:
@@ -194,13 +278,19 @@ class Session:
                 headers: Optional[Dict[str, str]] = None,
                 timeout: TimeoutType = 30,
                 stream: bool = False,
-                allow_redirects: bool = True) -> Response:
+                allow_redirects: bool = True,
+                verify: Optional[VerifyType] = None,
+                cert: Optional[CertType] = None,
+                proxies: Optional[ProxyType] = None,
+                compressed: bool = False) -> Response:
         method = method.upper()
         url = self._build_url(url, params=params)
             
         req_headers = self.headers.copy()
         if headers:
             req_headers.update(headers)
+        if compressed:
+            req_headers.setdefault("Accept-Encoding", "gzip, deflate")
         if auth is not None:
             req_headers["Authorization"] = self._encode_basic_auth(auth)
         if cookies:
@@ -208,12 +298,29 @@ class Session:
         req_data = self._normalize_data(data, json, files, req_headers)
         normalized_timeout = self._normalize_timeout(timeout)
         req = urllib.request.Request(url, data=req_data, headers=req_headers, method=method)
-        opener = self._opener if allow_redirects else self._opener_no_redirect
+        resolved_verify = self._default_verify if verify is None else verify
+        resolved_cert = self._default_cert if cert is None else cert
+        resolved_proxies = self._default_proxies if proxies is None else proxies
+        use_default_transport = (
+            resolved_verify == self._default_verify
+            and resolved_cert == self._default_cert
+            and resolved_proxies == self._default_proxies
+        )
+        if use_default_transport:
+            opener = self._opener if allow_redirects else self._opener_no_redirect
+        else:
+            opener = self._build_transport_opener(
+                allow_redirects=allow_redirects,
+                verify=resolved_verify,
+                cert=resolved_cert,
+                proxies=resolved_proxies,
+            )
         
         try:
             # We must be careful with 'with' if we want to stream
             resp = opener.open(req, timeout=normalized_timeout)
             response = Response(status_code=resp.status, headers=dict(resp.headers), url=url)
+            response.set_auto_decompress(compressed)
             
             if stream:
                 response._stream_response = resp
@@ -226,6 +333,7 @@ class Session:
         except urllib.error.HTTPError as e:
             # Even on error, we might want the response object
             response = Response(status_code=e.code, headers=dict(e.headers), url=url)
+            response.set_auto_decompress(compressed)
             if stream:
                 response._stream_response = e
                 self._open_responses.add(response)

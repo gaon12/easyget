@@ -1,6 +1,8 @@
 import io
 import json
 import base64
+import gzip
+import ssl
 import unittest
 from unittest.mock import MagicMock, patch
 from urllib.parse import parse_qs, urlsplit
@@ -211,6 +213,113 @@ class TestAPI(unittest.TestCase):
 
         self.assertEqual(opener.open.call_args.kwargs["timeout"], 2.5)
 
+    @patch("easyget.session.ssl.create_default_context")
+    def test_verify_false_builds_unverified_context(self, mock_create_context):
+        response = make_http_response(status=200)
+        opener = MagicMock()
+        opener.open.return_value = response
+        opener_no_redirect = MagicMock()
+        opener_no_redirect.open.return_value = response
+        custom_opener = MagicMock()
+        custom_opener.open.return_value = response
+
+        mock_ctx = MagicMock()
+        mock_create_context.return_value = mock_ctx
+
+        with patch(
+            "easyget.session.urllib.request.build_opener",
+            side_effect=[opener, opener_no_redirect, custom_opener],
+        ):
+            s = easyget.Session()
+            s.get("https://example.com", verify=False)
+
+        custom_opener.open.assert_called_once()
+        self.assertFalse(mock_ctx.check_hostname)
+        self.assertEqual(mock_ctx.verify_mode, ssl.CERT_NONE)
+
+    @patch("easyget.session.ssl.create_default_context")
+    def test_verify_path_loads_ca_file(self, mock_create_context):
+        response = make_http_response(status=200)
+        opener = MagicMock()
+        opener.open.return_value = response
+        opener_no_redirect = MagicMock()
+        opener_no_redirect.open.return_value = response
+        custom_opener = MagicMock()
+        custom_opener.open.return_value = response
+
+        mock_ctx = MagicMock()
+        mock_create_context.return_value = mock_ctx
+
+        with patch(
+            "easyget.session.urllib.request.build_opener",
+            side_effect=[opener, opener_no_redirect, custom_opener],
+        ):
+            s = easyget.Session()
+            s.get("https://example.com", verify="/tmp/ca.pem")
+
+        mock_ctx.load_verify_locations.assert_called_once_with(cafile="/tmp/ca.pem")
+
+    @patch("easyget.session.ssl.create_default_context")
+    def test_cert_tuple_loads_cert_chain(self, mock_create_context):
+        response = make_http_response(status=200)
+        opener = MagicMock()
+        opener.open.return_value = response
+        opener_no_redirect = MagicMock()
+        opener_no_redirect.open.return_value = response
+        custom_opener = MagicMock()
+        custom_opener.open.return_value = response
+
+        mock_ctx = MagicMock()
+        mock_create_context.return_value = mock_ctx
+
+        with patch(
+            "easyget.session.urllib.request.build_opener",
+            side_effect=[opener, opener_no_redirect, custom_opener],
+        ):
+            s = easyget.Session()
+            s.get("https://example.com", cert=("client.crt", "client.key"))
+
+        mock_ctx.load_cert_chain.assert_called_once_with(certfile="client.crt", keyfile="client.key")
+
+    def test_proxy_uses_custom_transport_opener(self):
+        response = make_http_response(status=200)
+        opener = MagicMock()
+        opener.open.return_value = response
+        opener_no_redirect = MagicMock()
+        opener_no_redirect.open.return_value = response
+        custom_opener = MagicMock()
+        custom_opener.open.return_value = response
+
+        with patch(
+            "easyget.session.urllib.request.build_opener",
+            side_effect=[opener, opener_no_redirect, custom_opener],
+        ):
+            s = easyget.Session()
+            s.get("https://example.com", proxies={"https": "http://proxy:8080"})
+
+        custom_opener.open.assert_called_once()
+
+    def test_compressed_request_sets_header_and_decompresses(self):
+        payload = gzip.compress(b"compressed body")
+        response = make_http_response(
+            status=200,
+            headers={"Content-Encoding": "gzip", "Content-Type": "text/plain; charset=utf-8"},
+            body=payload,
+        )
+        opener = MagicMock()
+        opener.open.return_value = response
+        opener_no_redirect = MagicMock()
+        opener_no_redirect.open.return_value = response
+
+        with patch("easyget.session.urllib.request.build_opener", side_effect=[opener, opener_no_redirect]):
+            s = easyget.Session()
+            resp = s.get("https://example.com", compressed=True)
+
+        req = opener.open.call_args.args[0]
+        self.assertEqual(req.get_header("Accept-encoding"), "gzip, deflate")
+        self.assertEqual(resp.content, b"compressed body")
+        self.assertEqual(resp.text, "compressed body")
+
     def test_top_level_stream_request_lifetime(self):
         response = make_http_response(status=200, body=b"streamed")
         response.read.side_effect = [b"str", b"eam", b"ed", b""]
@@ -241,6 +350,16 @@ class TestAPI(unittest.TestCase):
 
         self.assertEqual(list(response.iter_bytes(2)), [b"ab", b"cd", b"ef"])
         self.assertEqual(response.content, b"abcdef")
+
+    def test_response_gzip_decompression(self):
+        response = easyget.Response(
+            status_code=200,
+            headers={"Content-Encoding": "gzip", "Content-Type": "text/plain; charset=utf-8"},
+            url="http://example.com",
+        )
+        response._content = gzip.compress(b"hello gzip")
+        response.set_auto_decompress(True)
+        self.assertEqual(response.content, b"hello gzip")
 
 
 if __name__ == "__main__":
