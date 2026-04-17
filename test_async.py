@@ -88,6 +88,7 @@ class TestAsyncAPI(unittest.TestCase):
             response = easyget.Response(status_code=200, headers={}, url="https://example.com")
             response._content = b"ok"
             sync_session.request.return_value = response
+            hook = MagicMock()
 
             async with easyget.AsyncSession(session=sync_session) as session:
                 resp = await session.get(
@@ -97,6 +98,7 @@ class TestAsyncAPI(unittest.TestCase):
                     proxies={"https": "http://proxy.local:8080"},
                     compressed=True,
                     timeout=(1, 2),
+                    hooks={"response": hook},
                 )
                 self.assertEqual(await resp.read(), b"ok")
 
@@ -106,6 +108,7 @@ class TestAsyncAPI(unittest.TestCase):
             self.assertEqual(kwargs["proxies"], {"https": "http://proxy.local:8080"})
             self.assertTrue(kwargs["compressed"])
             self.assertEqual(kwargs["timeout"], (1, 2))
+            self.assertEqual(kwargs["hooks"], {"response": hook})
 
         asyncio.run(run())
 

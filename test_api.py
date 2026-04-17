@@ -362,6 +362,58 @@ class TestAPI(unittest.TestCase):
         response.set_auto_decompress(True)
         self.assertEqual(response.content, b"hello gzip")
 
+    def test_response_hook_can_modify_response(self):
+        response = make_http_response(status=200, body=b"ok")
+        opener = MagicMock()
+        opener.open.return_value = response
+        opener_no_redirect = MagicMock()
+        opener_no_redirect.open.return_value = response
+
+        def add_header(resp, meta):
+            resp.headers["X-Hook"] = meta["method"]
+            return resp
+
+        with patch("easyget.session.urllib.request.build_opener", side_effect=[opener, opener_no_redirect]):
+            s = easyget.Session()
+            resp = s.get("http://example.com", hooks={"response": add_header})
+
+        self.assertEqual(resp.headers["X-Hook"], "GET")
+
+    def test_response_hook_list_runs_in_order(self):
+        response = make_http_response(status=200, body=b"ok")
+        opener = MagicMock()
+        opener.open.return_value = response
+        opener_no_redirect = MagicMock()
+        opener_no_redirect.open.return_value = response
+
+        called = []
+
+        def hook_one(resp, _meta):
+            called.append("one")
+            return resp
+
+        def hook_two(resp, _meta):
+            called.append("two")
+            return resp
+
+        with patch("easyget.session.urllib.request.build_opener", side_effect=[opener, opener_no_redirect]):
+            s = easyget.Session()
+            s.get("http://example.com", hooks={"response": [hook_one, hook_two]})
+
+        self.assertEqual(called, ["one", "two"])
+
+    def test_invalid_response_hook_raises(self):
+        response = make_http_response(status=200, body=b"ok")
+        opener = MagicMock()
+        opener.open.return_value = response
+        opener_no_redirect = MagicMock()
+        opener_no_redirect.open.return_value = response
+
+        with patch("easyget.session.urllib.request.build_opener", side_effect=[opener, opener_no_redirect]):
+            s = easyget.Session()
+            with self.assertRaises(TypeError):
+                s.get("http://example.com", hooks={"response": [123]})
+
     def test_raise_for_status_uses_http_status_error(self):
         response = easyget.Response(status_code=404, headers={}, url="http://example.com/missing")
         with self.assertRaises(easyget.HTTPStatusError) as ctx:

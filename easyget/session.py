@@ -7,7 +7,7 @@ import ssl
 import urllib.error
 import urllib.request
 import urllib.parse
-from typing import Dict, Optional, Any, Union, Sequence, Tuple, List
+from typing import Dict, Optional, Any, Union, Sequence, Tuple, List, Callable
 from uuid import uuid4
 from .models import Response
 
@@ -15,6 +15,10 @@ TimeoutType = Optional[Union[int, float, Tuple[Optional[float], Optional[float]]
 VerifyType = Union[bool, str, os.PathLike[str]]
 CertType = Union[str, os.PathLike[str], Tuple[Union[str, os.PathLike[str]], Union[str, os.PathLike[str]]]]
 ProxyType = Union[str, Dict[str, str]]
+ResponseHookType = Union[
+    Callable[[Response, Dict[str, Any]], Optional[Response]],
+    Sequence[Callable[[Response, Dict[str, Any]], Optional[Response]]],
+]
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -128,6 +132,42 @@ class Session:
         new_pairs = urllib.parse.parse_qsl(new_query, keep_blank_values=True)
         merged_query = urllib.parse.urlencode(existing_pairs + new_pairs, doseq=True)
         return urllib.parse.urlunsplit((split.scheme, split.netloc, split.path, merged_query, split.fragment))
+
+    @staticmethod
+    def _normalize_response_hooks(hooks: Optional[Any]) -> List[Callable[[Response, Dict[str, Any]], Optional[Response]]]:
+        if hooks is None:
+            return []
+        if isinstance(hooks, dict):
+            response_hooks = hooks.get("response")
+        else:
+            response_hooks = hooks
+
+        if response_hooks is None:
+            return []
+        if callable(response_hooks):
+            return [response_hooks]
+        if isinstance(response_hooks, (list, tuple)):
+            normalized = []
+            for hook in response_hooks:
+                if not callable(hook):
+                    raise TypeError("response hooks must be callables")
+                normalized.append(hook)
+            return normalized
+        raise TypeError("hooks must be a callable, list of callables, or {'response': ...}")
+
+    @classmethod
+    def _run_response_hooks(
+        cls,
+        response: Response,
+        *,
+        hooks: Optional[Any],
+        request_meta: Dict[str, Any],
+    ) -> Response:
+        for hook in cls._normalize_response_hooks(hooks):
+            maybe_response = hook(response, request_meta)
+            if isinstance(maybe_response, Response):
+                response = maybe_response
+        return response
 
     @staticmethod
     def _encode_basic_auth(auth: Tuple[str, str]) -> str:
@@ -282,7 +322,8 @@ class Session:
                 verify: Optional[VerifyType] = None,
                 cert: Optional[CertType] = None,
                 proxies: Optional[ProxyType] = None,
-                compressed: bool = False) -> Response:
+                compressed: bool = False,
+                hooks: Optional[ResponseHookType] = None) -> Response:
         method = method.upper()
         url = self._build_url(url, params=params)
             
@@ -329,7 +370,11 @@ class Session:
             else:
                 with resp:
                     response._content = resp.read()
-            return response
+            return self._run_response_hooks(
+                response,
+                hooks=hooks,
+                request_meta={"method": method, "url": url, "status_code": response.status_code},
+            )
         except urllib.error.HTTPError as e:
             # Even on error, we might want the response object
             response = Response(status_code=e.code, headers=dict(e.headers), url=url)
@@ -340,7 +385,11 @@ class Session:
                 response.add_close_callback(lambda: self._open_responses.discard(response))
             else:
                 response._content = e.read()
-            return response
+            return self._run_response_hooks(
+                response,
+                hooks=hooks,
+                request_meta={"method": method, "url": url, "status_code": response.status_code},
+            )
         except urllib.error.URLError as e:
             from .exceptions import RequestError
             raise RequestError(
