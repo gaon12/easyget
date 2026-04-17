@@ -1,4 +1,5 @@
 import unittest
+import importlib
 from unittest.mock import MagicMock, patch, mock_open
 import os
 import threading
@@ -9,6 +10,10 @@ from easyget.downloader import download_file, download_range
 from easyget.utils import parse_speed, SpeedLimiter, safe_rename, ProgressBar
 
 class TestEasyGet(unittest.TestCase):
+
+    def test_cli_module_imports(self):
+        module = importlib.import_module("easyget.cli")
+        self.assertTrue(callable(getattr(module, "main", None)))
 
     def test_parse_speed(self):
         self.assertEqual(parse_speed("1M"), 1024 * 1024)
