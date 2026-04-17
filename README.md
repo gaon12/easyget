@@ -149,6 +149,12 @@ easyget -X POST --json-data '{"name":"easyget"}' -i -L https://httpbin.org/post
 
 # HEAD request
 easyget -I https://example.com
+
+# TLS/proxy + compressed response
+easyget -X GET --proxy http://proxy.local:8080 --cacert ./ca.pem --compressed https://example.com/api
+
+# Multipart form upload
+easyget -X POST -F "name=demo" -F "file=@./hello.txt;type=text/plain" https://httpbin.org/post
 ```
 
 ---
@@ -185,6 +191,9 @@ https://example.com/file2.zip
 | `--username`, `--password` | Basic 인증용 계정 정보 |
 | `--token`                | Bearer 토큰 인증 |
 | `--mode`                 | Download mode: `fast` or `accurate` |
+| `-X`, `-d`, `--json-data`, `--data-urlencode` | HTTP request mode body/method options |
+| `-F`, `-I`, `-L`, `--fail`, `-i` | curl-style request mode controls |
+| `--proxy`, `--cacert`, `-k`, `--cert`, `--key`, `--compressed` | request mode transport/TLS controls |
 
 ---
 

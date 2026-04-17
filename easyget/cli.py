@@ -4,6 +4,7 @@ import logging
 import base64
 import os
 import json
+import urllib.parse
 from typing import Dict, List, Tuple
 
 from .logging_utils import setup_logging
@@ -16,7 +17,7 @@ from .session import Session
 DEFAULT_THREADS = 4
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="easyget: wget/curl compatible file downloader (Python 3.7+ Zero-dependency)")
+    parser = argparse.ArgumentParser(description="easyget: wget/curl compatible file downloader (Python 3.12+ Zero-dependency)")
     parser.add_argument("input", help="URL to download or a file path (txt, csv, tsv) containing URLs")
     parser.add_argument("-o", "-O", "--output", help="Output filename")
     parser.add_argument("-c", "--resume", action="store_true", help="Resume interrupted download")
@@ -43,6 +44,14 @@ def parse_args():
     parser.add_argument("-L", "--location", action="store_true", help="Follow redirects in request mode")
     parser.add_argument("--fail", dest="fail_http", action="store_true", help="Fail on HTTP 4xx/5xx in request mode")
     parser.add_argument("-i", "--include", dest="include_headers", action="store_true", help="Include response headers in output")
+    parser.add_argument("--data-urlencode", action="append", help="URL-encoded data field (request mode)")
+    parser.add_argument("-F", "--form", action="append", help="Multipart form field (request mode), e.g., key=value or file=@/path")
+    parser.add_argument("--proxy", help="Proxy URL for request mode")
+    parser.add_argument("--cacert", help="CA bundle path for TLS verification in request mode")
+    parser.add_argument("-k", "--insecure", action="store_true", help="Disable TLS verification in request mode")
+    parser.add_argument("--cert", help="Client certificate path for mTLS in request mode")
+    parser.add_argument("--key", help="Client private key path for mTLS in request mode")
+    parser.add_argument("--compressed", action="store_true", help="Request compressed response and auto-decompress")
     parser.add_argument("--timeout", type=float, default=30.0, help="HTTP timeout (seconds) for request mode")
 
     return parser.parse_args()
@@ -52,11 +61,62 @@ def is_request_mode(args: argparse.Namespace) -> bool:
         args.request_method,
         args.request_data is not None,
         args.json_data is not None,
+        bool(args.data_urlencode),
+        bool(args.form),
         args.head_only,
         args.location,
         args.fail_http,
         args.include_headers,
+        args.proxy,
+        args.cacert,
+        args.insecure,
+        args.cert,
+        args.key,
+        args.compressed,
     ])
+
+def _parse_data_urlencode(values: List[str]) -> str:
+    encoded_parts = []
+    for raw in values:
+        if "=" in raw:
+            key, value = raw.split("=", 1)
+            encoded_parts.append(f"{urllib.parse.quote_plus(key)}={urllib.parse.quote_plus(value)}")
+        else:
+            encoded_parts.append(urllib.parse.quote_plus(raw))
+    return "&".join(encoded_parts)
+
+def _parse_form_entries(values: List[str]) -> Tuple[List[Tuple[str, str]], Dict[str, tuple]]:
+    data_fields: List[Tuple[str, str]] = []
+    file_fields: Dict[str, tuple] = {}
+
+    for raw in values:
+        if "=" not in raw:
+            raise ValueError(f"Invalid form field: {raw}")
+        key, value = raw.split("=", 1)
+        key = key.strip()
+        if not key:
+            raise ValueError(f"Invalid form field key: {raw}")
+
+        if value.startswith("@"):
+            file_spec = value[1:]
+            content_type = None
+            if ";type=" in file_spec:
+                file_path, content_type = file_spec.split(";type=", 1)
+            else:
+                file_path = file_spec
+            if not os.path.exists(file_path):
+                raise ValueError(f"Form file not found: {file_path}")
+            with open(file_path, "rb") as f:
+                file_bytes = f.read()
+            filename = os.path.basename(file_path) or key
+            if content_type:
+                file_fields[key] = (filename, file_bytes, content_type)
+            else:
+                file_fields[key] = (filename, file_bytes)
+        else:
+            data_fields.append((key, value))
+
+    return data_fields, file_fields
 
 def run_request_mode(args: argparse.Namespace, headers: Dict[str, str]) -> int:
     if os.path.exists(args.input) and args.input.lower().endswith(('.txt', '.csv', '.tsv')):
@@ -68,7 +128,7 @@ def run_request_mode(args: argparse.Namespace, headers: Dict[str, str]) -> int:
         method = args.request_method.upper()
     elif args.head_only:
         method = "HEAD"
-    elif args.request_data is not None or args.json_data is not None:
+    elif args.request_data is not None or args.json_data is not None or args.data_urlencode or args.form:
         method = "POST"
     else:
         method = "GET"
@@ -80,15 +140,53 @@ def run_request_mode(args: argparse.Namespace, headers: Dict[str, str]) -> int:
         except json.JSONDecodeError as e:
             raise ValueError(f"Invalid JSON in --json-data: {e}") from e
 
+    if args.key and not args.cert:
+        raise ValueError("--key requires --cert")
+    if args.insecure and args.cacert:
+        raise ValueError("Cannot use --insecure and --cacert together")
+
+    form_data = None
+    form_files = None
+    if args.form:
+        if args.request_data is not None or args.data_urlencode or json_payload is not None:
+            raise ValueError("--form cannot be combined with --data/--data-urlencode/--json-data")
+        form_data, form_files = _parse_form_entries(args.form)
+
+    request_data = args.request_data
+    if args.data_urlencode:
+        encoded = _parse_data_urlencode(args.data_urlencode)
+        if request_data:
+            request_data = f"{request_data}&{encoded}"
+        else:
+            request_data = encoded
+        headers.setdefault("Content-Type", "application/x-www-form-urlencoded")
+
+    verify = None
+    if args.insecure:
+        verify = False
+    elif args.cacert:
+        verify = args.cacert
+
+    cert = None
+    if args.cert and args.key:
+        cert = (args.cert, args.key)
+    elif args.cert:
+        cert = args.cert
+
     with Session() as session:
         response = session.request(
             method=method,
             url=args.input,
-            data=args.request_data,
+            data=form_data if args.form else request_data,
             json=json_payload,
+            files=form_files,
             headers=headers,
             timeout=args.timeout,
             allow_redirects=args.location,
+            verify=verify,
+            cert=cert,
+            proxies=args.proxy,
+            compressed=args.compressed,
             stream=False,
         )
 
