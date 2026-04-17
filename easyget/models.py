@@ -1,5 +1,7 @@
 import json
+import gzip
 import re
+import zlib
 from typing import Callable, Dict, Iterator, List, Optional
 
 class Response:
@@ -15,6 +17,26 @@ class Response:
         self._stream_response = None # Placeholder for the raw response object
         self._closed = False
         self._close_callbacks: List[Callable[[], None]] = []
+        self._auto_decompress = False
+        self._content_decoded = False
+
+    def _decode_content(self, content: bytes) -> bytes:
+        encoding = self.headers.get("Content-Encoding", "").strip().lower()
+        if not self._auto_decompress or not encoding:
+            return content
+
+        try:
+            if encoding == "gzip":
+                return gzip.decompress(content)
+            if encoding == "deflate":
+                try:
+                    return zlib.decompress(content)
+                except zlib.error:
+                    return zlib.decompress(content, -zlib.MAX_WBITS)
+        except Exception:
+            # Invalid or truncated payload should not crash response consumption.
+            return content
+        return content
 
     @property
     def content(self) -> bytes:
@@ -26,6 +48,9 @@ class Response:
                     self.close()
             else:
                 self._content = b""
+        if not self._content_decoded:
+            self._content = self._decode_content(self._content)
+            self._content_decoded = True
         return self._content
 
     @property
@@ -58,11 +83,22 @@ class Response:
 
     def iter_bytes(self, chunk_size: int = 1024) -> Iterator[bytes]:
         if self._content is not None:
-            for idx in range(0, len(self._content), chunk_size):
-                yield self._content[idx:idx + chunk_size]
+            decoded = self.content
+            for idx in range(0, len(decoded), chunk_size):
+                yield decoded[idx:idx + chunk_size]
             return
 
         if self._stream_response:
+            if self._auto_decompress and self.headers.get("Content-Encoding", "").strip().lower() in {"gzip", "deflate"}:
+                try:
+                    self._content = self._stream_response.read()
+                finally:
+                    self.close()
+                self._content_decoded = False
+                for idx in range(0, len(self.content), chunk_size):
+                    yield self._content[idx:idx + chunk_size]
+                return
+
             chunks = []
             try:
                 while True:
@@ -73,6 +109,7 @@ class Response:
                     yield chunk
             finally:
                 self._content = b"".join(chunks)
+                self._content_decoded = False
                 self.close()
 
     def close(self):
@@ -97,6 +134,11 @@ class Response:
 
     def add_close_callback(self, callback: Callable[[], None]):
         self._close_callbacks.append(callback)
+
+    def set_auto_decompress(self, enabled: bool):
+        self._auto_decompress = bool(enabled)
+        if self._content is not None:
+            self._content_decoded = False
 
     @property
     def closed(self) -> bool:
