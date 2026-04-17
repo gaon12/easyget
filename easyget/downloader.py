@@ -7,10 +7,13 @@ from typing import Optional, Dict, Tuple
 from .exceptions import EasyGetError, DownloadError, IntegrityError
 from .utils import ProgressBar, SpeedLimiter, safe_rename, parse_speed, get_filename_from_headers
 
+from .session import Session
+from .models import Response
+
 # Constants / 상수
 CHUNK_SIZE = 1024 * 64  # 64KB buffer for optimal I/O / 최적의 I/O를 위한 64KB 버퍼
 
-def get_file_info(url: str, headers: Dict[str, str]) -> Tuple[Optional[int], bool, Dict[str, str]]:
+def get_file_info(url: str, headers: Dict[str, str], session: Optional[Session] = None) -> Tuple[Optional[int], bool, Dict[str, str]]:
     """
     Retrieve file size and check if Range requests are supported using HEAD and GET probe.
     Also returns important headers for integrity and filename extraction.
@@ -19,10 +22,12 @@ def get_file_info(url: str, headers: Dict[str, str]) -> Tuple[Optional[int], boo
     range_supported = False
     info_headers = {}
     
+    session = session or Session()
+    
     try:
         # Step 1: Try HEAD request
-        req = urllib.request.Request(url, headers=headers, method='HEAD')
-        with urllib.request.urlopen(req, timeout=10) as response:
+        response = session.head(url, headers=headers)
+        if response.status_code == 200:
             size_raw = response.headers.get('Content-Length')
             if size_raw: size = int(size_raw)
             if response.headers.get('Accept-Ranges') == 'bytes':
@@ -41,21 +46,20 @@ def get_file_info(url: str, headers: Dict[str, str]) -> Tuple[Optional[int], boo
         try:
             probe_headers = headers.copy()
             probe_headers['Range'] = 'bytes=0-0'
-            req = urllib.request.Request(url, headers=probe_headers)
-            with urllib.request.urlopen(req, timeout=10) as response:
-                if response.status == 206:
-                    range_supported = True
-                    if size is None:
-                        cr = response.headers.get('Content-Range')
-                        if cr and '/' in cr:
-                            size_raw = cr.split('/')[-1]
-                            if size_raw.isdigit(): size = int(size_raw)
-                    
-                    # Also capture headers from GET response if not present
-                    for h in ['ETag', 'Last-Modified', 'Content-Disposition']:
-                        if h not in info_headers:
-                            val = response.headers.get(h)
-                            if val: info_headers[h] = val
+            response = session.get(url, headers=probe_headers)
+            if response.status_code == 206:
+                range_supported = True
+                if size is None:
+                    cr = response.headers.get('Content-Range')
+                    if cr and '/' in cr:
+                        size_raw = cr.split('/')[-1]
+                        if size_raw.isdigit(): size = int(size_raw)
+                
+                # Also capture headers from GET response if not present
+                for h in ['ETag', 'Last-Modified', 'Content-Disposition']:
+                    if h not in info_headers:
+                        val = response.headers.get(h)
+                        if val: info_headers[h] = val
         except Exception as e:
             logging.debug(f"Range probe failed for {url}: {e}")
 
@@ -63,28 +67,26 @@ def get_file_info(url: str, headers: Dict[str, str]) -> Tuple[Optional[int], boo
 
 def download_range(url: str, start: int, end: int, headers: Dict[str, str],
                    tmp_path: str, pbar: ProgressBar, limiter: Optional[SpeedLimiter],
-                   error_event: threading.Event) -> None:
+                   error_event: threading.Event, session: Optional[Session] = None) -> None:
     """
     Download a specific byte range of a file. Used for multi-threaded downloads.
-    파일의 특정 바이트 범위를 다운로드합니다. 멀티스레드 다운로드에 사용됩니다.
     """
+    session = session or Session()
     req_headers = headers.copy()
     req_headers['Range'] = f'bytes={start}-{end}'
-    req = urllib.request.Request(url, headers=req_headers)
     
     try:
-        with urllib.request.urlopen(req, timeout=30) as response:
-            if response.status != 206:
-                raise IntegrityError(f"Server at {url} does not support Range requests (Status: {response.status}).")
+        response = session.get(url, headers=req_headers, stream=True)
+        if response.status_code != 206:
+            raise IntegrityError(f"Server at {url} does not support Range requests (Status: {response.status_code}).")
 
-            with open(tmp_path, 'r+b') as f:
-                f.seek(start)
-                while not error_event.is_set():
-                    chunk = response.read(CHUNK_SIZE)
-                    if not chunk: break
-                    if limiter: limiter.wait(len(chunk))
-                    f.write(chunk)
-                    if pbar: pbar.update(len(chunk))
+        with open(tmp_path, 'r+b') as f:
+            f.seek(start)
+            for chunk in response.iter_bytes(CHUNK_SIZE):
+                if error_event.is_set(): break
+                if limiter: limiter.wait(len(chunk))
+                f.write(chunk)
+                if pbar: pbar.update(len(chunk))
     except Exception as e:
         logging.error(f"Range download failed for {url} ({start}-{end}): {e}")
         error_event.set()
@@ -102,10 +104,11 @@ def download_file(url: str, output: Optional[str] = None, resume: bool = False, 
     
     # Retry loop
     attempt = 0
+    session = Session()
     while attempt <= retries:
         try:
             # Get file info (size, range support, ETag, etc.)
-            total_size, range_supported, info_headers = get_file_info(url, headers)
+            total_size, range_supported, info_headers = get_file_info(url, headers, session=session)
             
             # 1. Determine final output filename if not provided
             if not output:
@@ -149,18 +152,15 @@ def download_file(url: str, output: Optional[str] = None, resume: bool = False, 
             if pbar and downloaded_size > 0: pbar.update(downloaded_size)
 
             if threads == 1:
-                req = urllib.request.Request(url, headers=headers)
-                with urllib.request.urlopen(req, timeout=60) as response:
-                    if resume and downloaded_size > 0 and response.status != 206:
-                        raise IntegrityError(f"Server does not support resume for {url} (Status: {response.status}).")
-                    
-                    with open(tmp_path, mode_flag) as f:
-                        while True:
-                            chunk = response.read(CHUNK_SIZE)
-                            if not chunk: break
-                            if limiter: limiter.wait(len(chunk))
-                            f.write(chunk)
-                            if pbar: pbar.update(len(chunk))
+                response = session.get(url, headers=headers, stream=True)
+                if resume and downloaded_size > 0 and response.status_code != 206:
+                    raise IntegrityError(f"Server does not support resume for {url} (Status: {response.status_code}).")
+                
+                with open(tmp_path, mode_flag) as f:
+                    for chunk in response.iter_bytes(CHUNK_SIZE):
+                        if limiter: limiter.wait(len(chunk))
+                        f.write(chunk)
+                        if pbar: pbar.update(len(chunk))
             else:
                 if not os.path.exists(tmp_path):
                     with open(tmp_path, 'wb') as f:
@@ -176,9 +176,7 @@ def download_file(url: str, output: Optional[str] = None, resume: bool = False, 
                 
                 thread_pool = []
                 for start, end in range_list:
-                    # Note: download_range always expects a pbar (which might be None or a dummy)
-                    # For simplicity, we pass None if show_progress is False and handle it in download_range
-                    t = threading.Thread(target=download_range, args=(url, start, end, headers, tmp_path, pbar, limiter, error_event))
+                    t = threading.Thread(target=download_range, args=(url, start, end, headers, tmp_path, pbar, limiter, error_event, session))
                     thread_pool.append(t)
                     t.start()
                 
