@@ -7,6 +7,8 @@ from typing import List, Tuple
 from urllib.parse import urlparse, urljoin
 from .utils import get_filename_from_url
 
+from .session import Session
+
 def expand_wildcard_url(url: str, headers: dict) -> List[Tuple[str, str]]:
     """
     Expand a URL containing an asterisk (*) by listing the directory and matching the pattern.
@@ -17,17 +19,17 @@ def expand_wildcard_url(url: str, headers: dict) -> List[Tuple[str, str]]:
     pattern = os.path.basename(parsed.path)
     base_url = f"{parsed.scheme}://{parsed.netloc}{base_path}/"
     
+    session = Session()
     try:
-        req = urllib.request.Request(base_url, headers=headers)
-        with urllib.request.urlopen(req, timeout=30) as response:
-            if response.status != 200:
-                logging.error(f"easyget error: Directory listing failed (Status: {response.status})")
-                return []
-            
-            content = response.read().decode('utf-8', errors='ignore')
-            
-            # Improved regex to handle both single and double quotes
-            links = re.findall(r'href=["\']([^"\']+)["\']', content)
+        response = session.get(base_url, headers=headers)
+        if response.status_code != 200:
+            logging.error(f"easyget error: Directory listing failed (Status: {response.status_code})")
+            return []
+        
+        content = response.text
+        
+        # Improved regex to handle both single and double quotes
+        links = re.findall(r'href=["\']([^"\']+)["\']', content)
             
             matched_links = []
             seen_urls = set()
