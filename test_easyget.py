@@ -1,11 +1,12 @@
 import unittest
 import importlib
 import io
+import os
 import tempfile
 from unittest.mock import MagicMock, patch, mock_open
 import threading
 
-from easyget.downloader import download_file, download_range
+from easyget.downloader import download_file, download_range, _compute_retry_delay
 from easyget.utils import parse_speed, SpeedLimiter, safe_rename, ProgressBar
 from easyget.models import Response
 from easyget.exceptions import DownloadError
@@ -84,6 +85,24 @@ class TestEasyGet(unittest.TestCase):
         pbar.update(500)
         pbar.close()
 
+    def test_retry_delay_strategy(self):
+        self.assertEqual(
+            _compute_retry_delay(1, retry_delay=1.0, retry_backoff="fixed", retry_max_delay=10.0),
+            1.0,
+        )
+        self.assertEqual(
+            _compute_retry_delay(3, retry_delay=1.0, retry_backoff="linear", retry_max_delay=10.0),
+            3.0,
+        )
+        self.assertEqual(
+            _compute_retry_delay(3, retry_delay=1.0, retry_backoff="exponential", retry_max_delay=10.0),
+            4.0,
+        )
+        self.assertEqual(
+            _compute_retry_delay(10, retry_delay=2.0, retry_backoff="exponential", retry_max_delay=5.0),
+            5.0,
+        )
+
     @patch("easyget.downloader.Session")
     def test_download_file_raises_on_http_error(self, mock_session_cls):
         response = Response(status_code=404, headers={}, url="http://example.com/file.txt")
@@ -144,6 +163,34 @@ class TestEasyGet(unittest.TestCase):
                 self.assertEqual(f.read(), b"abc")
 
         mock_get_file_info.assert_not_called()
+
+    @patch("easyget.downloader.Session")
+    @patch("easyget.downloader.get_file_info")
+    def test_timestamping_skips_when_local_is_newer(self, mock_get_file_info, mock_session_cls):
+        mock_session = MagicMock()
+        mock_session_cls.return_value = mock_session
+        mock_get_file_info.return_value = (
+            100,
+            True,
+            {"Last-Modified": "Wed, 21 Oct 2015 07:28:00 GMT"},
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = f"{tmpdir}/exists.txt"
+            with open(output, "wb") as f:
+                f.write(b"local")
+            # Ensure local file mtime is newer than mocked remote date.
+            os.utime(output, (1700000000, 1700000000))
+
+            download_file(
+                "http://example.com/file.txt",
+                output=output,
+                timestamping=True,
+                retries=0,
+                show_progress=False,
+            )
+
+        mock_session.get.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()
