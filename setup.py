@@ -4,10 +4,7 @@ setup(
     name="easyget",
     version="1.0.1",
     packages=find_packages(),
-    install_requires=[
-        "httpx>=0.27.0",
-        "tqdm>=4.60.0"
-    ],
+    install_requires=[],
     entry_points={
         "console_scripts": [
             "easyget=easyget.__main__:main",

@@ -1,0 +1,8 @@
+__pycache__/
+*.part
+*.pyc
+.pytest_cache/
+*.file
+out.txt
+dummy.part
+repro_*.py
