@@ -17,6 +17,11 @@ class TestCLI(unittest.TestCase):
             args = cli.parse_args()
         self.assertEqual(args.output, "saved.txt")
 
+    def test_parse_args_supports_continue_alias(self):
+        with patch.object(sys, "argv", ["easyget", "--continue", "http://example.com/file.txt"]):
+            args = cli.parse_args()
+        self.assertTrue(args.resume)
+
     @patch("easyget.cli.download_file", side_effect=RuntimeError("boom"))
     def test_json_mode_outputs_structured_error(self, _mock_download):
         out = io.StringIO()
@@ -29,7 +34,8 @@ class TestCLI(unittest.TestCase):
 
         self.assertEqual(ctx.exception.code, 1)
         payload = json.loads(out.getvalue())
-        self.assertEqual(payload[0]["status"], "error")
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"]["code"], "UNEXPECTED_ERROR")
         self.assertEqual(err.getvalue().strip(), "")
 
     @patch("easyget.cli.Session")
@@ -57,8 +63,10 @@ class TestCLI(unittest.TestCase):
 
         self.assertEqual(ctx.exception.code, 0)
         payload = json.loads(out.getvalue())
-        self.assertEqual(payload["status"], 200)
-        self.assertEqual(payload["method"], "POST")
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["mode"], "request")
+        self.assertEqual(payload["result"]["status"], 200)
+        self.assertEqual(payload["result"]["method"], "POST")
 
         kwargs = mock_session.request.call_args.kwargs
         self.assertEqual(kwargs["method"], "POST")
@@ -80,6 +88,8 @@ class TestCLI(unittest.TestCase):
                 cli.main()
 
         self.assertEqual(ctx.exception.code, 0)
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["result"]["method"], "HEAD")
         kwargs = mock_session.request.call_args.kwargs
         self.assertEqual(kwargs["method"], "HEAD")
 
@@ -114,6 +124,8 @@ class TestCLI(unittest.TestCase):
                 cli.main()
 
         self.assertEqual(ctx.exception.code, 0)
+        payload = json.loads(out.getvalue())
+        self.assertTrue(payload["ok"])
         kwargs = mock_session.request.call_args.kwargs
         self.assertTrue(kwargs["allow_redirects"])
         self.assertEqual(kwargs["verify"], "/tmp/ca.pem")
@@ -144,6 +156,8 @@ class TestCLI(unittest.TestCase):
                 cli.main()
 
         self.assertEqual(ctx.exception.code, 0)
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["result"]["method"], "POST")
         kwargs = mock_session.request.call_args.kwargs
         self.assertEqual(kwargs["method"], "POST")
         self.assertEqual(kwargs["data"], "q=hello+world&lang=ko")
@@ -177,6 +191,8 @@ class TestCLI(unittest.TestCase):
                     cli.main()
 
         self.assertEqual(ctx.exception.code, 0)
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["result"]["method"], "POST")
         kwargs = mock_session.request.call_args.kwargs
         self.assertEqual(kwargs["method"], "POST")
         self.assertEqual(kwargs["data"], [("name", "demo")])
@@ -185,6 +201,46 @@ class TestCLI(unittest.TestCase):
         self.assertEqual(file_tuple[0], "upload.txt")
         self.assertEqual(file_tuple[1], b"file-body")
         self.assertEqual(file_tuple[2], "text/plain")
+
+    @patch("easyget.cli.download_file", side_effect=RuntimeError("boom"))
+    def test_ai_mode_compact_error_payload(self, _mock_download):
+        out = io.StringIO()
+        argv = ["easyget", "--ai", "http://example.com/file.txt"]
+        with patch.object(sys, "argv", argv), redirect_stdout(out):
+            with self.assertRaises(SystemExit) as ctx:
+                cli.main()
+
+        self.assertEqual(ctx.exception.code, 1)
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["ok"], 0)
+        self.assertEqual(payload["e"]["c"], "UNEXPECTED_ERROR")
+
+    @patch("easyget.cli.download_file")
+    def test_download_mode_forwards_retry_and_timestamping(self, mock_download):
+        out = io.StringIO()
+        argv = [
+            "easyget",
+            "--json",
+            "--retry-delay",
+            "2.5",
+            "--retry-max-delay",
+            "9",
+            "--retry-backoff",
+            "linear",
+            "--timestamping",
+            "http://example.com/file.txt",
+        ]
+        with patch.object(sys, "argv", argv), redirect_stdout(out):
+            cli.main()
+
+        payload = json.loads(out.getvalue())
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["mode"], "download")
+        kwargs = mock_download.call_args.kwargs
+        self.assertEqual(kwargs["retry_delay"], 2.5)
+        self.assertEqual(kwargs["retry_max_delay"], 9.0)
+        self.assertEqual(kwargs["retry_backoff"], "linear")
+        self.assertTrue(kwargs["timestamping"])
 
 
 if __name__ == "__main__":

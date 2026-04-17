@@ -5,7 +5,7 @@ import base64
 import os
 import json
 import urllib.parse
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Any
 
 from .logging_utils import setup_logging
 from .utils import get_filename_from_url, ProgressBar
@@ -13,16 +13,68 @@ from .input_parser import parse_file_list
 from .wildcard import expand_wildcard_url
 from .downloader import download_file
 from .session import Session
+from .exceptions import EasyGetError
+from .diagnostics import error_payload
 
 DEFAULT_THREADS = 4
+EXIT_OK = 0
+EXIT_PARTIAL = 3
+EXIT_USAGE = 2
+EXIT_NETWORK = 10
+EXIT_HTTP = 11
+EXIT_INTEGRITY = 12
+EXIT_DOWNLOAD = 13
+EXIT_INTERRUPTED = 130
+EXIT_UNKNOWN = 1
+
+def _render_success_payload(mode: str, result: Any, ai_mode: bool) -> Dict[str, Any]:
+    if ai_mode:
+        return {"ok": 1, "m": mode, "r": result}
+    return {"ok": True, "schema": "easyget/1", "mode": mode, "result": result}
+
+def _render_results_payload(mode: str, results: List[Dict[str, Any]], ai_mode: bool) -> Dict[str, Any]:
+    success_count = sum(1 for item in results if item.get("status") == "success")
+    total = len(results)
+    if ai_mode:
+        return {"ok": 1 if success_count == total else 0, "m": mode, "n": total, "s": success_count, "rs": results}
+    return {
+        "ok": success_count == total,
+        "schema": "easyget/1",
+        "mode": mode,
+        "summary": {"total": total, "success": success_count, "failed": total - success_count},
+        "results": results,
+    }
+
+def _print_payload(payload: Dict[str, Any], ai_mode: bool) -> None:
+    if ai_mode:
+        print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+    else:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+
+def _exit_code_for_error(exc: Exception) -> int:
+    if isinstance(exc, ValueError):
+        return EXIT_USAGE
+    if isinstance(exc, EasyGetError):
+        if exc.code == "HTTP_STATUS_ERROR":
+            return EXIT_HTTP
+        if exc.code == "REQUEST_ERROR":
+            return EXIT_NETWORK
+        if exc.code == "INTEGRITY_ERROR":
+            return EXIT_INTEGRITY
+        if exc.code == "DOWNLOAD_FAILED":
+            return EXIT_DOWNLOAD
+    return EXIT_UNKNOWN
 
 def parse_args():
     parser = argparse.ArgumentParser(description="easyget: wget/curl compatible file downloader (Python 3.12+ Zero-dependency)")
     parser.add_argument("input", help="URL to download or a file path (txt, csv, tsv) containing URLs")
     parser.add_argument("-o", "-O", "--output", help="Output filename")
-    parser.add_argument("-c", "--resume", action="store_true", help="Resume interrupted download")
+    parser.add_argument("-c", "--continue", "--resume", dest="resume", action="store_true", help="Resume interrupted download")
     parser.add_argument("--multi", type=int, help="Number of threads (default: 4 in accurate mode, 1 in fast mode)")
     parser.add_argument("--retry", type=int, default=3, help="Number of retries on failure (default: 3)")
+    parser.add_argument("--retry-delay", type=float, default=1.0, help="Base retry delay in seconds (default: 1.0)")
+    parser.add_argument("--retry-max-delay", type=float, default=30.0, help="Maximum retry delay in seconds (default: 30)")
+    parser.add_argument("--retry-backoff", choices=["exponential", "linear", "fixed"], default="exponential", help="Retry backoff strategy")
     parser.add_argument("--max-speed", "--limit-rate", help="Maximum speed (e.g., 1M, 500K)")
     parser.add_argument("--user-agent", help="User-Agent header")
     parser.add_argument("--username", help="Username for basic auth")
@@ -30,12 +82,14 @@ def parse_args():
     parser.add_argument("--token", help="Bearer token for auth")
     parser.add_argument("--header", action="append", help="Additional HTTP header (key:value)")
     parser.add_argument("--no-cache", action="store_true", help="Ignore cached .part files")
+    parser.add_argument("--timestamping", action="store_true", help="Skip download when local file is newer than remote Last-Modified")
     parser.add_argument("--mode", choices=["fast", "accurate"], default="fast", help="Download mode (default: fast)")
     parser.add_argument("-f", "--force", action="store_true", help="Overwrite existing files")
     parser.add_argument("-s", "--skip-existing", action="store_true", help="Skip existing files")
     parser.add_argument("-P", "--output-dir", help="Directory to save files")
     parser.add_argument("-q", "--quiet", action="store_true", help="Quiet mode (no output)")
     parser.add_argument("--json", action="store_true", help="Output results in JSON format")
+    parser.add_argument("--ai", action="store_true", help="Emit compact, token-optimized machine output")
     parser.add_argument("-v", "--verbose", action="store_true", help="Display debug logs")
     parser.add_argument("-X", "--request-method", help="HTTP method for request mode (e.g., GET, POST, PUT)")
     parser.add_argument("-d", "--data", dest="request_data", help="HTTP request body for request mode")
@@ -203,7 +257,7 @@ def run_request_mode(args: argparse.Namespace, headers: Dict[str, str]) -> int:
             f.write(body_bytes)
 
     if args.json:
-        payload = {
+        payload_data = {
             "url": response.url,
             "method": method,
             "status": response.status_code,
@@ -211,8 +265,9 @@ def run_request_mode(args: argparse.Namespace, headers: Dict[str, str]) -> int:
             "output": args.output,
             "body": None if args.output else response.text,
         }
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
-        return 0
+        payload = _render_success_payload("request", payload_data, ai_mode=args.ai)
+        _print_payload(payload, ai_mode=args.ai)
+        return EXIT_OK
 
     if args.include_headers:
         print(f"HTTP {response.status_code}")
@@ -224,10 +279,12 @@ def run_request_mode(args: argparse.Namespace, headers: Dict[str, str]) -> int:
         sys.stdout.write(response.text)
         if not response.text.endswith("\n"):
             sys.stdout.write("\n")
-    return 0
+    return EXIT_OK
 
 def main():
     args = parse_args()
+    if args.ai:
+        args.json = True
     setup_logging(args.verbose, args.quiet or args.json)
     
     # Disable progress bars in quiet or json mode
@@ -283,23 +340,28 @@ def main():
                                   max_speed=args.max_speed, headers=headers, progress_position=1,
                                   ignore_cache=args.no_cache, mode=args.mode, force=args.force,
                                   skip_existing=args.skip_existing, retries=args.retry,
-                                  show_progress=show_progress)
+                                  show_progress=show_progress, retry_delay=args.retry_delay,
+                                  retry_backoff=args.retry_backoff, retry_max_delay=args.retry_max_delay,
+                                  timestamping=args.timestamping)
                     success_count += 1
-                    results.append({"url": url, "output": output, "status": "success"})
+                    results.append({"url": url, "output": output, "status": "success", "ok": True})
                 except Exception as e:
                     if not args.json:
                         logging.error(f"\nFailed to download {url}: {e}")
-                    results.append({"url": url, "output": output, "status": "error", "message": str(e)})
+                    err = error_payload(e, compact=args.ai)
+                    item = {"url": url, "output": output, "status": "error", "ok": False}
+                    item.update(err)
+                    results.append(item)
                 
                 if global_pbar: global_pbar.update(1)
             
             if global_pbar: global_pbar.close()
             
             if args.json:
-                import json
-                print(json.dumps(results, indent=2))
+                payload = _render_results_payload("download", results, ai_mode=args.ai)
+                _print_payload(payload, ai_mode=args.ai)
                 if success_count != len(file_list):
-                    sys.exit(1)
+                    sys.exit(EXIT_PARTIAL)
             elif not args.quiet:
                 logging.info(f"Batch download complete: {success_count}/{len(file_list)} files successful.")
         else:
@@ -312,23 +374,44 @@ def main():
                               max_speed=args.max_speed, headers=headers, progress_position=0,
                               ignore_cache=args.no_cache, mode=args.mode, force=args.force,
                               skip_existing=args.skip_existing, retries=args.retry,
-                              show_progress=show_progress)
+                              show_progress=show_progress, retry_delay=args.retry_delay,
+                              retry_backoff=args.retry_backoff, retry_max_delay=args.retry_max_delay,
+                              timestamping=args.timestamping)
                 if args.json:
-                    import json
-                    print(json.dumps([{"url": url, "output": output, "status": "success"}], indent=2))
+                    payload = _render_success_payload(
+                        "download",
+                        {"url": url, "output": output, "status": "success", "ok": True},
+                        ai_mode=args.ai,
+                    )
+                    _print_payload(payload, ai_mode=args.ai)
             except Exception as e:
                 if args.json:
-                    import json
-                    print(json.dumps([{"url": url, "output": output, "status": "error", "message": str(e)}], indent=2))
-                    sys.exit(1)
+                    err = error_payload(e, compact=args.ai)
+                    if args.ai:
+                        payload = {
+                            "ok": 0,
+                            "m": "download",
+                            "r": {"u": url, "o": output, "s": "error"},
+                            "e": err.get("e", {"c": "UNEXPECTED_ERROR", "m": str(e)}),
+                        }
+                    else:
+                        payload = {
+                            "ok": False,
+                            "schema": "easyget/1",
+                            "mode": "download",
+                            "result": {"url": url, "output": output, "status": "error"},
+                            "error": err.get("error", {"code": "UNEXPECTED_ERROR", "message": str(e)}),
+                        }
+                    _print_payload(payload, ai_mode=args.ai)
+                    sys.exit(_exit_code_for_error(e))
                 raise
     except KeyboardInterrupt:
         logging.info("\nDownload interrupted by user.")
-        sys.exit(1)
+        sys.exit(EXIT_INTERRUPTED)
     except Exception as e:
         if args.json:
-            import json
-            print(json.dumps([{"status": "error", "message": str(e)}], indent=2))
-            sys.exit(1)
+            payload = error_payload(e, compact=args.ai)
+            _print_payload(payload, ai_mode=args.ai)
+            sys.exit(_exit_code_for_error(e))
         logging.error(f"easyget error: {e}")
-        sys.exit(1)
+        sys.exit(_exit_code_for_error(e))
