@@ -140,6 +140,32 @@ class Response:
         if self._content is not None:
             self._content_decoded = False
 
+    def summary(
+        self,
+        *,
+        include_body: bool = False,
+        max_body_chars: int = 512,
+        compact: bool = False,
+    ) -> Dict[str, object]:
+        """
+        Serialize response metadata for logs, automation, or LLM-friendly traces.
+        """
+        if compact:
+            payload: Dict[str, object] = {"st": self.status_code, "ok": 1 if self.ok else 0, "u": self.url}
+            if include_body:
+                payload["b"] = self.text[:max(0, int(max_body_chars))]
+            return payload
+
+        payload = {
+            "status_code": self.status_code,
+            "ok": self.ok,
+            "url": self.url,
+            "headers": self.headers,
+        }
+        if include_body:
+            payload["body_preview"] = self.text[:max(0, int(max_body_chars))]
+        return payload
+
     @property
     def closed(self) -> bool:
         return self._closed

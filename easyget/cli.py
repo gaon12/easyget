@@ -257,14 +257,19 @@ def run_request_mode(args: argparse.Namespace, headers: Dict[str, str]) -> int:
             f.write(body_bytes)
 
     if args.json:
-        payload_data = {
-            "url": response.url,
-            "method": method,
-            "status": response.status_code,
-            "headers": response.headers,
-            "output": args.output,
-            "body": None if args.output else response.text,
-        }
+        summary = response.summary(include_body=not bool(args.output), max_body_chars=4096, compact=args.ai)
+        if args.ai:
+            payload_data = {"m": method, "o": args.output, **summary}
+        else:
+            payload_data = {
+                "method": method,
+                "output": args.output,
+                "status": summary["status_code"],
+                "ok": summary["ok"],
+                "url": summary["url"],
+                "headers": summary["headers"],
+                "body": None if args.output else summary.get("body_preview"),
+            }
         payload = _render_success_payload("request", payload_data, ai_mode=args.ai)
         _print_payload(payload, ai_mode=args.ai)
         return EXIT_OK
