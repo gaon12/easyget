@@ -20,8 +20,8 @@ It supports modern features like multithreading, speed limits, resume support, w
 - ✅ **Ignore cache** (`--no-cache`, ignore `.part` files)
 - ✅ **Basic auth / Bearer token support**
 - ✅ **Download modes** (`--mode fast` or `accurate`)
-  - `fast` (default): single-threaded, skips HEAD inquiry for speed
-  - `accurate`: prefers HEAD request to get Content-Length and uses multithread when possible
+  - `fast` (default): minimizes metadata probes and downloads immediately in common single-file cases
+  - `accurate`: probes metadata (HEAD/Range) to improve size/range detection and multithread decisions
 - ✅ **English/Korean comments and error messages**
 
 - ✅ **wget/curl 스타일 옵션 지원** (`-O`, `-c`, `--limit-rate`)
@@ -34,8 +34,8 @@ It supports modern features like multithreading, speed limits, resume support, w
 - ✅ **캐시 무시 기능** (`--no-cache`, `.part` 파일 무시)
 - ✅ **기본 인증 / Bearer 토큰 지원**
 - ✅ **다운로드 모드** (`--mode fast` 또는 `accurate`)
-  - `fast` (기본값): HEAD 조회를 생략하여 단일 스레드로 빠르게 다운로드
-  - `accurate`: HEAD 요청을 통해 Content-Length를 확인하고, 가능하다면 멀티스레드 다운로드
+  - `fast` (기본값): 일반적인 단일 파일 다운로드에서 메타데이터 조회를 최소화하고 즉시 다운로드
+  - `accurate`: HEAD/Range 기반 메타데이터를 조회해 크기/Range/멀티스레드 판단 정확도를 높임
 - ✅ **영어/한글 주석 및 에러 메시지**
 
 ---
@@ -46,9 +46,9 @@ It supports modern features like multithreading, speed limits, resume support, w
 pip install easyget
 ```
 
-`easyget` is a zero-dependency tool that works with the Python 3.12+ standard library. Or go to [Release page](https://github.com/gaon12/easyget/releases/latest) and download the latest version.
+`easyget` is a zero-dependency tool that works with the Python 3.7+ standard library. Or go to [Release page](https://github.com/gaon12/easyget/releases/latest) and download the latest version.
 
-`easyget`은 Python 3.12+ 표준 라이브러리만 사용하는 무의존성(zero-dependency) 도구입니다. 또는 [릴리즈 페이지](https://github.com/gaon12/easyget/releases/latest)에서 최신 버전을 다운로드하세요.
+`easyget`은 Python 3.7+ 표준 라이브러리만 사용하는 무의존성(zero-dependency) 도구입니다. 또는 [릴리즈 페이지](https://github.com/gaon12/easyget/releases/latest)에서 최신 버전을 다운로드하세요.
 
 ---
 
@@ -57,43 +57,45 @@ pip install easyget
 ### 1. Single file download / 단일 파일 다운로드
 
 ```bash
-python easyget.py "https://example.com/file.zip"
+easyget "https://example.com/file.zip"
+# or
+python -m easyget "https://example.com/file.zip"
 ```
 
 ### 2. Specify mode / 모드 지정 (fast or accurate)
 
 ```bash
-python easyget.py --mode accurate "https://example.com/file.zip"
+easyget --mode accurate "https://example.com/file.zip"
 ```
 
 ### 3. Specify output filename / 파일명 지정
 
 ```bash
-python easyget.py "https://example.com/file.zip" -O myfile.zip
+easyget "https://example.com/file.zip" -O myfile.zip
 ```
 
 ### 4. Resume download / 이어받기
 
 ```bash
-python easyget.py "https://example.com/file.zip" -c
+easyget "https://example.com/file.zip" -c
 ```
 
 ### 5. Multi-threaded with speed limit / 멀티스레드 + 속도 제한
 
 ```bash
-python easyget.py "https://example.com/large.iso" --mode accurate --multi 8 --max-speed 2M
+easyget "https://example.com/large.iso" --mode accurate --multi 8 --max-speed 2M
 ```
 
 ### 6. Use input file list (txt, csv, tsv) / URL 리스트로 다운로드
 
 ```bash
-python easyget.py urls.csv
+easyget urls.csv
 ```
 
 ### 7. Wildcard in URL / 와일드카드 URL 사용
 
 ```bash
-python easyget.py "https://example.com/files/*.zip"
+easyget "https://example.com/files/*.zip"
 ```
 
 ---
@@ -120,7 +122,7 @@ https://example.com/file2.zip
 
 | Option                   | Description / 설명 |
 |--------------------------|---------------------|
-| `--output`, `-O`         | Output file name (단일 파일 다운로드 시) |
+| `--output`, `-o`, `-O`   | Output file name (단일 파일 다운로드 시) |
 | `--resume`, `-c`         | Resume download (이어받기) |
 | `--multi`                | Number of threads (스레드 수) |
 | `--max-speed`            | Download speed limit (e.g., 1M, 500K) |
