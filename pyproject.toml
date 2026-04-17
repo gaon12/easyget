@@ -1,3 +1,17 @@
 [build-system]
 requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "easyget"
+version = "1.0.1"
+description = "Fast, easy-to-use multi-platform file downloader with zero dependencies"
+authors = [
+    { name = "Your Name" }
+]
+readme = "README.md"
+requires-python = ">=3.7"
+dependencies = []
+
+[project.scripts]
+easyget = "easyget.__main__:main"
