@@ -157,6 +157,40 @@ def get_filename_from_url(url: str) -> str:
     path = urlparse(url).path
     return os.path.basename(path) or "downloaded.file"
 
+def should_download_output(output: str, force: bool = False, skip_existing: bool = False) -> bool:
+    """
+    Decide whether a download should proceed when the destination file already exists.
+    기존 파일이 있을 때 다운로드를 계속할지 결정합니다.
+    """
+    global _OVERWRITE_ALL, _SKIP_ALL
+
+    if not os.path.exists(output):
+        return True
+
+    if force or _OVERWRITE_ALL:
+        return True
+
+    if skip_existing or _SKIP_ALL:
+        logging.info(f"File '{output}' already exists. Skipping.")
+        return False
+
+    if not sys.stdin.isatty():
+        logging.warning(f"File '{output}' exists in non-interactive mode. Skipping.")
+        return False
+
+    prompt = f"File '{output}' exists. Overwrite? [y/n/a(ll)/i(skip all)]: "
+    ans = input(prompt).lower().strip()
+    if ans == 'a':
+        _OVERWRITE_ALL = True
+        return True
+    if ans == 'i':
+        _SKIP_ALL = True
+        logging.info(f"File '{output}' already exists. Skipping.")
+        return False
+    if ans == 'y':
+        return True
+    return False
+
 def safe_rename(tmp_path: str, output: str, force: bool = False, skip_existing: bool = False) -> bool:
     """
     Safely moves the temporary file to the final destination.
@@ -164,30 +198,10 @@ def safe_rename(tmp_path: str, output: str, force: bool = False, skip_existing: 
     """
     global _OVERWRITE_ALL, _SKIP_ALL
     
-    if os.path.exists(output):
-        if force or _OVERWRITE_ALL:
-            pass
-        elif skip_existing or _SKIP_ALL:
-            logging.info(f"File '{output}' already exists. Skipping.")
-            if os.path.exists(tmp_path): os.remove(tmp_path)
-            return False
-        else:
-            if not sys.stdin.isatty():
-                logging.warning(f"File '{output}' exists in non-interactive mode. Skipping.")
-                if os.path.exists(tmp_path): os.remove(tmp_path)
-                return False
-            
-            # Interactive prompt / 사용자 대화형 확인
-            prompt = f"File '{output}' exists. Overwrite? [y/n/a(ll)/i(skip all)]: "
-            ans = input(prompt).lower().strip()
-            if ans == 'a': _OVERWRITE_ALL = True
-            elif ans == 'i': 
-                _SKIP_ALL = True
-                if os.path.exists(tmp_path): os.remove(tmp_path)
-                return False
-            elif ans != 'y':
-                if os.path.exists(tmp_path): os.remove(tmp_path)
-                return False
+    if not should_download_output(output, force=force, skip_existing=skip_existing):
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        return False
                 
     try:
         os.replace(tmp_path, output)
