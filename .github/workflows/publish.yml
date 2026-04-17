@@ -1,31 +1,113 @@
-name: Upload Python Package to PyPI
+name: Publish Python Package and Create GitHub Release
 
 on:
   push:
     tags:
-      - 'v*'  # v로 시작하는 태그에 반응
+      - "v*" # v로 시작하는 태그에 반응 (예: v1.2.3)
+
+permissions:
+  contents: write
 
 jobs:
-  build-and-publish:
+  build-publish-release:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
-    - name: Install build tools
-      run: |
-        python -m pip install --upgrade pip build
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build
 
-    - name: Build package
-      run: |
-        python -m build
+      - name: Validate tag and package version
+        run: |
+          python - <<'PY'
+          import tomllib
+          from pathlib import Path
+          import os
+          import sys
 
-    - name: Publish to PyPI
-      uses: pypa/gh-action-pypi-publish@release/v1
-      with:
-        password: ${{ secrets.PYPI_API_TOKEN }}
+          tag = os.environ["GITHUB_REF_NAME"]
+          if not tag.startswith("v"):
+              print(f"Tag must start with 'v': {tag}")
+              sys.exit(1)
+
+          package_version = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+          expected_tag = f"v{package_version}"
+          if tag != expected_tag:
+              print(f"Tag/version mismatch: tag={tag}, pyproject={package_version} (expected tag {expected_tag})")
+              sys.exit(1)
+          print(f"Tag/version validated: {tag}")
+          PY
+
+      - name: Build package
+        run: python -m build
+
+      - name: Validate build artifacts (exactly 2 files)
+        run: |
+          ls -l dist
+          file_count=$(find dist -maxdepth 1 -type f \( -name "*.whl" -o -name "*.tar.gz" \) | wc -l | tr -d ' ')
+          if [ "$file_count" -ne 2 ]; then
+            echo "Expected 2 build artifacts (.whl + .tar.gz), but found: $file_count"
+            exit 1
+          fi
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
+
+      - name: Generate release notes
+        run: |
+          set -eu
+
+          current_tag="${GITHUB_REF_NAME}"
+          previous_tag="$(git tag --list 'v*' --sort=-creatordate | grep -vx "${current_tag}" | head -n 1 || true)"
+
+          if [ -n "${previous_tag}" ]; then
+            range="${previous_tag}..${current_tag}"
+            compare_url="https://github.com/${GITHUB_REPOSITORY}/compare/${previous_tag}...${current_tag}"
+          else
+            range="${current_tag}"
+            compare_url=""
+          fi
+
+          {
+            echo "## 커밋"
+            echo
+            if [ -n "${previous_tag}" ]; then
+              echo "- 비교 범위: \`${previous_tag}..${current_tag}\`"
+              echo "- 전체 비교: ${compare_url}"
+              echo
+            fi
+            git log --pretty=format:'- %s ([`%h`](https://github.com/'"${GITHUB_REPOSITORY}"'/commit/%H))' "${range}" || true
+            echo
+            echo
+            echo "## 커밋 기록"
+            echo
+            git log --date=short --pretty=format:'- %ad %h %an | %s' "${range}" || true
+            echo
+            echo
+            echo "## 업데이트 방법"
+            echo
+            echo "- 최신 버전 설치/업데이트: \`pip install -U easyget\`"
+            echo "- 릴리즈 파일 사용: 이 릴리즈의 \`.whl\` 또는 \`.tar.gz\` 파일 다운로드"
+          } > release_notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          body_path: release_notes.md
+          files: |
+            dist/*.whl
+            dist/*.tar.gz
