@@ -26,4 +26,11 @@ from .async_session import (
     aoptions,
 )
 from .models import Response
-from .exceptions import EasyGetError, DownloadError, IntegrityError
+from .exceptions import (
+    EasyGetError,
+    DownloadError,
+    IntegrityError,
+    RequestError,
+    HTTPStatusError,
+)
+from .diagnostics import error_payload

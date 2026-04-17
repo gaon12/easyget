@@ -146,8 +146,11 @@ class Response:
 
     def raise_for_status(self):
         if 400 <= self.status_code < 600:
-            from .exceptions import DownloadError
-            raise DownloadError(f"HTTP Error: {self.status_code} for url: {self.url}")
+            from .exceptions import HTTPStatusError
+            raise HTTPStatusError(
+                f"HTTP Error: {self.status_code} for url: {self.url}",
+                context={"status_code": self.status_code, "url": self.url},
+            )
 
     def __enter__(self):
         return self

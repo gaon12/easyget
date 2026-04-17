@@ -3,6 +3,7 @@ import json
 import base64
 import gzip
 import ssl
+import urllib.error
 import unittest
 from unittest.mock import MagicMock, patch
 from urllib.parse import parse_qs, urlsplit
@@ -360,6 +361,34 @@ class TestAPI(unittest.TestCase):
         response._content = gzip.compress(b"hello gzip")
         response.set_auto_decompress(True)
         self.assertEqual(response.content, b"hello gzip")
+
+    def test_raise_for_status_uses_http_status_error(self):
+        response = easyget.Response(status_code=404, headers={}, url="http://example.com/missing")
+        with self.assertRaises(easyget.HTTPStatusError) as ctx:
+            response.raise_for_status()
+        self.assertEqual(ctx.exception.code, "HTTP_STATUS_ERROR")
+        self.assertEqual(ctx.exception.context["status_code"], 404)
+
+    def test_request_error_is_structured(self):
+        opener = MagicMock()
+        opener.open.side_effect = urllib.error.URLError("offline")
+        opener_no_redirect = MagicMock()
+        opener_no_redirect.open.side_effect = urllib.error.URLError("offline")
+
+        with patch("easyget.session.urllib.request.build_opener", side_effect=[opener, opener_no_redirect]):
+            s = easyget.Session()
+            with self.assertRaises(easyget.RequestError) as ctx:
+                s.get("http://example.com")
+
+        payload = ctx.exception.to_dict()
+        self.assertEqual(payload["code"], "REQUEST_ERROR")
+        self.assertTrue(payload["retryable"])
+
+    def test_error_payload_compact_mode(self):
+        err = easyget.RequestError("network down", context={"url": "http://example.com"})
+        compact = easyget.error_payload(err, compact=True)
+        self.assertEqual(compact["ok"], 0)
+        self.assertEqual(compact["e"]["c"], "REQUEST_ERROR")
 
 
 if __name__ == "__main__":
