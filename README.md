@@ -6,6 +6,9 @@ It supports modern features like multithreading, speed limits, resume support, w
 `easyget`는 Python으로 작성된 wget/curl 호환 명령줄 다운로드 도구입니다.  
 멀티스레드, 속도 제한, 이어받기, 와일드카드 URL 확장, 진행률 표시 등 현대적인 기능을 지원하며, 영어와 한국어로 모두 친절하게 안내합니다.
 
+`easyget` philosophy: **Easy for human, optimized for AI**.  
+`easyget` 철학: **사람에게는 쉽고, AI에는 토큰 효율적으로 최적화**.
+
 ---
 
 ## Features / 특징
@@ -20,6 +23,7 @@ It supports modern features like multithreading, speed limits, resume support, w
 - ✅ **Ignore cache** (`--no-cache`, ignore `.part` files)
 - ✅ **Basic auth / Bearer token support**
 - ✅ **Python HTTP client API (sync + async)** for `requests`/`aiohttp`-style migration
+- ✅ **AI-optimized structured outputs** (`--ai`) and structured diagnostics for automation/agents
 - ✅ **Download modes** (`--mode fast` or `accurate`)
   - `fast` (default): minimizes metadata probes and downloads immediately in common single-file cases
   - `accurate`: probes metadata (HEAD/Range) to improve size/range detection and multithread decisions
@@ -35,6 +39,7 @@ It supports modern features like multithreading, speed limits, resume support, w
 - ✅ **캐시 무시 기능** (`--no-cache`, `.part` 파일 무시)
 - ✅ **기본 인증 / Bearer 토큰 지원**
 - ✅ **Python HTTP 클라이언트 API (동기 + 비동기)** (`requests`/`aiohttp` 마이그레이션 용도)
+- ✅ **AI 최적화 구조화 출력** (`--ai`) 및 구조화 진단 정보
 - ✅ **다운로드 모드** (`--mode fast` 또는 `accurate`)
   - `fast` (기본값): 일반적인 단일 파일 다운로드에서 메타데이터 조회를 최소화하고 즉시 다운로드
   - `accurate`: HEAD/Range 기반 메타데이터를 조회해 크기/Range/멀티스레드 판단 정확도를 높임
@@ -155,6 +160,9 @@ easyget -X GET --proxy http://proxy.local:8080 --cacert ./ca.pem --compressed ht
 
 # Multipart form upload
 easyget -X POST -F "name=demo" -F "file=@./hello.txt;type=text/plain" https://httpbin.org/post
+
+# AI-optimized compact payload
+easyget --ai -X GET --output-select status https://example.com/api
 ```
 
 ---
@@ -191,9 +199,12 @@ https://example.com/file2.zip
 | `--username`, `--password` | Basic 인증용 계정 정보 |
 | `--token`                | Bearer 토큰 인증 |
 | `--mode`                 | Download mode: `fast` or `accurate` |
+| `--continue`, `--retry-delay`, `--retry-max-delay`, `--retry-backoff`, `--timestamping` | wget-style advanced download controls |
 | `-X`, `-d`, `--json-data`, `--data-urlencode` | HTTP request mode body/method options |
 | `-F`, `-I`, `-L`, `--fail`, `-i` | curl-style request mode controls |
+| `--output-select`        | request mode response selection (`all/status/headers/body`) |
 | `--proxy`, `--cacert`, `-k`, `--cert`, `--key`, `--compressed` | request mode transport/TLS controls |
+| `--json`, `--ai`         | machine output mode / AI compact output mode |
 
 ---
 
