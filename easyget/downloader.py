@@ -1,6 +1,8 @@
 import os
 import threading
 import logging
+import email.utils
+from datetime import timezone
 import urllib.request
 import urllib.error
 from typing import Optional, Dict, Tuple
@@ -20,6 +22,38 @@ from .models import Response
 
 # Constants / 상수
 CHUNK_SIZE = 1024 * 64  # 64KB buffer for optimal I/O / 최적의 I/O를 위한 64KB 버퍼
+
+def _parse_http_datetime(http_datetime: str) -> Optional[float]:
+    try:
+        dt = email.utils.parsedate_to_datetime(http_datetime)
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except Exception:
+        return None
+
+def _compute_retry_delay(
+    attempt: int,
+    *,
+    retry_delay: float,
+    retry_backoff: str,
+    retry_max_delay: float,
+) -> float:
+    retry_delay = max(0.0, float(retry_delay))
+    retry_max_delay = max(0.0, float(retry_max_delay))
+
+    if retry_backoff == "fixed":
+        wait_time = retry_delay
+    elif retry_backoff == "linear":
+        wait_time = retry_delay * attempt
+    else:
+        wait_time = retry_delay * (2 ** (attempt - 1))
+
+    if retry_max_delay > 0:
+        wait_time = min(wait_time, retry_max_delay)
+    return wait_time
 
 def get_file_info(url: str, headers: Dict[str, str], session: Optional[Session] = None) -> Tuple[Optional[int], bool, Dict[str, str]]:
     """
@@ -103,7 +137,9 @@ def download_file(url: str, output: Optional[str] = None, resume: bool = False, 
                   max_speed: Optional[str] = None, headers: Optional[Dict[str, str]] = None,
                   progress_position: int = 0, ignore_cache: bool = False, mode: str = "fast",
                   force: bool = False, skip_existing: bool = False, retries: int = 3,
-                  show_progress: bool = True) -> None:
+                  show_progress: bool = True, retry_delay: float = 1.0,
+                  retry_backoff: str = "exponential", retry_max_delay: float = 30.0,
+                  timestamping: bool = False) -> None:
     """
     Main orchestrator for downloading a single file with retries and integrity checks.
     """
@@ -123,7 +159,7 @@ def download_file(url: str, output: Optional[str] = None, resume: bool = False, 
             info_headers: Dict[str, str] = {}
             resolved_output = output if output_was_provided else get_filename_from_url(url)
 
-            should_probe = mode == "accurate" or attempt_threads > 1 or resume
+            should_probe = mode == "accurate" or attempt_threads > 1 or resume or timestamping
             if should_probe:
                 # Get file info (size, range support, ETag, etc.)
                 total_size, range_supported, info_headers = get_file_info(url, request_headers, session=session)
@@ -138,6 +174,15 @@ def download_file(url: str, output: Optional[str] = None, resume: bool = False, 
             # Skip/overwrite policy must be handled before any network download.
             if not should_download_output(resolved_output, force=force, skip_existing=skip_existing):
                 return
+
+            if timestamping and os.path.exists(resolved_output):
+                remote_modified_raw = info_headers.get("Last-Modified")
+                remote_modified = _parse_http_datetime(remote_modified_raw) if remote_modified_raw else None
+                if remote_modified is not None:
+                    local_modified = os.path.getmtime(resolved_output)
+                    if local_modified >= remote_modified:
+                        logging.info(f"Local file is up-to-date. Skipping: {resolved_output}")
+                        return
                 
             tmp_path = resolved_output + ".part"
             if ignore_cache and os.path.exists(tmp_path):
@@ -224,7 +269,12 @@ def download_file(url: str, output: Optional[str] = None, resume: bool = False, 
                 if 'pbar' in locals() and pbar: pbar.close()
                 raise DownloadError(f"Download failed after {retries} retries: {e}") from e
             
-            wait_time = 2 ** attempt
+            wait_time = _compute_retry_delay(
+                attempt,
+                retry_delay=retry_delay,
+                retry_backoff=retry_backoff,
+                retry_max_delay=retry_max_delay,
+            )
             logging.warning(f"\nDownload failed: {e}. Retrying in {wait_time}s... ({attempt}/{retries})")
             time.sleep(wait_time)
         except Exception as e:
