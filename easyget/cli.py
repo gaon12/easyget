@@ -106,6 +106,7 @@ def parse_args():
     parser.add_argument("--cert", help="Client certificate path for mTLS in request mode")
     parser.add_argument("--key", help="Client private key path for mTLS in request mode")
     parser.add_argument("--compressed", action="store_true", help="Request compressed response and auto-decompress")
+    parser.add_argument("--output-select", choices=["all", "status", "headers", "body"], default="all", help="Select response fields to output in request mode")
     parser.add_argument("--timeout", type=float, default=30.0, help="HTTP timeout (seconds) for request mode")
 
     return parser.parse_args()
@@ -127,7 +128,47 @@ def is_request_mode(args: argparse.Namespace) -> bool:
         args.cert,
         args.key,
         args.compressed,
+        args.output_select != "all",
     ])
+
+def _select_request_payload(response, method: str, output: str | None, select: str, ai_mode: bool) -> Dict[str, Any]:
+    if ai_mode:
+        base = {"m": method, "o": output}
+    else:
+        base = {"method": method, "output": output}
+
+    if select == "status":
+        if ai_mode:
+            base["st"] = response.status_code
+        else:
+            base["status"] = response.status_code
+        return base
+
+    if select == "headers":
+        if ai_mode:
+            base["h"] = response.headers
+        else:
+            base["headers"] = response.headers
+        return base
+
+    if select == "body":
+        if ai_mode:
+            base["b"] = None if output else response.text
+        else:
+            base["body"] = None if output else response.text
+        return base
+
+    summary = response.summary(include_body=not bool(output), max_body_chars=4096, compact=ai_mode)
+    if ai_mode:
+        return {**base, **summary}
+    return {
+        **base,
+        "status": summary["status_code"],
+        "ok": summary["ok"],
+        "url": summary["url"],
+        "headers": summary["headers"],
+        "body": None if output else summary.get("body_preview"),
+    }
 
 def _parse_data_urlencode(values: List[str]) -> str:
     encoded_parts = []
@@ -257,30 +298,30 @@ def run_request_mode(args: argparse.Namespace, headers: Dict[str, str]) -> int:
             f.write(body_bytes)
 
     if args.json:
-        summary = response.summary(include_body=not bool(args.output), max_body_chars=4096, compact=args.ai)
-        if args.ai:
-            payload_data = {"m": method, "o": args.output, **summary}
-        else:
-            payload_data = {
-                "method": method,
-                "output": args.output,
-                "status": summary["status_code"],
-                "ok": summary["ok"],
-                "url": summary["url"],
-                "headers": summary["headers"],
-                "body": None if args.output else summary.get("body_preview"),
-            }
+        payload_data = _select_request_payload(
+            response,
+            method=method,
+            output=args.output,
+            select=args.output_select,
+            ai_mode=args.ai,
+        )
         payload = _render_success_payload("request", payload_data, ai_mode=args.ai)
         _print_payload(payload, ai_mode=args.ai)
         return EXIT_OK
 
-    if args.include_headers:
+    if args.output_select in {"headers", "all"} or args.include_headers:
         print(f"HTTP {response.status_code}")
         for key, value in response.headers.items():
             print(f"{key}: {value}")
         print()
+        if args.output_select == "headers":
+            return EXIT_OK
 
-    if not args.output and body_bytes:
+    if args.output_select == "status":
+        print(response.status_code)
+        return EXIT_OK
+
+    if args.output_select in {"body", "all"} and not args.output and body_bytes:
         sys.stdout.write(response.text)
         if not response.text.endswith("\n"):
             sys.stdout.write("\n")

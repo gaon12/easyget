@@ -134,6 +134,45 @@ class TestCLI(unittest.TestCase):
         self.assertTrue(kwargs["compressed"])
 
     @patch("easyget.cli.Session")
+    def test_request_mode_output_select_status(self, mock_session_cls):
+        response = easyget.Response(status_code=204, headers={"X-Test": "v"}, url="https://example.com")
+        response._content = b""
+        mock_session = MagicMock()
+        mock_session.request.return_value = response
+        mock_session_cls.return_value.__enter__.return_value = mock_session
+
+        out = io.StringIO()
+        argv = ["easyget", "--json", "--output-select", "status", "https://example.com"]
+        with patch.object(sys, "argv", argv), redirect_stdout(out):
+            with self.assertRaises(SystemExit) as ctx:
+                cli.main()
+
+        self.assertEqual(ctx.exception.code, 0)
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["result"]["status"], 204)
+        self.assertNotIn("headers", payload["result"])
+
+    @patch("easyget.cli.Session")
+    def test_request_mode_output_select_headers_text(self, mock_session_cls):
+        response = easyget.Response(status_code=200, headers={"X-Test": "v"}, url="https://example.com")
+        response._content = b"body"
+        mock_session = MagicMock()
+        mock_session.request.return_value = response
+        mock_session_cls.return_value.__enter__.return_value = mock_session
+
+        out = io.StringIO()
+        argv = ["easyget", "--output-select", "headers", "https://example.com"]
+        with patch.object(sys, "argv", argv), redirect_stdout(out):
+            with self.assertRaises(SystemExit) as ctx:
+                cli.main()
+
+        self.assertEqual(ctx.exception.code, 0)
+        printed = out.getvalue()
+        self.assertIn("HTTP 200", printed)
+        self.assertIn("X-Test: v", printed)
+        self.assertNotIn("body", printed)
+
+    @patch("easyget.cli.Session")
     def test_request_mode_data_urlencode_builds_body(self, mock_session_cls):
         response = easyget.Response(status_code=200, headers={}, url="https://example.com")
         response._content = b"ok"
