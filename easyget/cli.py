@@ -6,41 +6,17 @@ import os
 from typing import Dict, List, Tuple
 
 from .logging_utils import setup_logging
-from .utils import get_filename_from_url, set_overwrite_all, set_skip_all, ProgressBar
+from .utils import get_filename_from_url, ProgressBar
 from .input_parser import parse_file_list
 from .wildcard import expand_wildcard_url
 from .downloader import download_file
 
 DEFAULT_THREADS = 4
 
-def alias_wget_curl_style(args: argparse.Namespace) -> argparse.Namespace:
-    """Map wget/curl style options to our arguments for compatibility."""
-    if args.output is None and '-O' in sys.argv:
-        try:
-            idx = sys.argv.index('-O')
-            if idx + 1 < len(sys.argv): args.output = sys.argv[idx + 1]
-        except ValueError: pass
-
-    if not args.resume and '-c' in sys.argv: args.resume = True
-
-    if args.max_speed is None:
-        for arg in sys.argv:
-            if arg.startswith("--limit-rate"):
-                if "=" in arg:
-                    _, value = arg.split("=", 1)
-                    args.max_speed = value
-                else:
-                    try:
-                        idx = sys.argv.index(arg)
-                        if idx + 1 < len(sys.argv): args.max_speed = sys.argv[idx + 1]
-                    except ValueError: pass
-                break
-    return args
-
 def parse_args():
-    parser = argparse.ArgumentParser(description="easyget: wget/curl compatible file downloader (Python 3.12+ Zero-dependency)")
+    parser = argparse.ArgumentParser(description="easyget: wget/curl compatible file downloader (Python 3.7+ Zero-dependency)")
     parser.add_argument("input", help="URL to download or a file path (txt, csv, tsv) containing URLs")
-    parser.add_argument("-o", "--output", help="Output filename")
+    parser.add_argument("-o", "-O", "--output", help="Output filename")
     parser.add_argument("-c", "--resume", action="store_true", help="Resume interrupted download")
     parser.add_argument("--multi", type=int, help="Number of threads (default: 4 in accurate mode, 1 in fast mode)")
     parser.add_argument("--retry", type=int, default=3, help="Number of retries on failure (default: 3)")
@@ -59,12 +35,11 @@ def parse_args():
     parser.add_argument("--json", action="store_true", help="Output results in JSON format")
     parser.add_argument("-v", "--verbose", action="store_true", help="Display debug logs")
 
-    args = parser.parse_args()
-    return alias_wget_curl_style(args)
+    return parser.parse_args()
 
 def main():
     args = parse_args()
-    setup_logging(args.verbose, args.quiet)
+    setup_logging(args.verbose, args.quiet or args.json)
     
     # Disable progress bars in quiet or json mode
     show_progress = not (args.quiet or args.json)
@@ -118,7 +93,8 @@ def main():
                     success_count += 1
                     results.append({"url": url, "output": output, "status": "success"})
                 except Exception as e:
-                    logging.error(f"\nFailed to download {url}: {e}")
+                    if not args.json:
+                        logging.error(f"\nFailed to download {url}: {e}")
                     results.append({"url": url, "output": output, "status": "error", "message": str(e)})
                 
                 if global_pbar: global_pbar.update(1)
@@ -128,6 +104,8 @@ def main():
             if args.json:
                 import json
                 print(json.dumps(results, indent=2))
+                if success_count != len(file_list):
+                    sys.exit(1)
             elif not args.quiet:
                 logging.info(f"Batch download complete: {success_count}/{len(file_list)} files successful.")
         else:
@@ -148,10 +126,15 @@ def main():
                 if args.json:
                     import json
                     print(json.dumps([{"url": url, "output": output, "status": "error", "message": str(e)}], indent=2))
+                    sys.exit(1)
                 raise
     except KeyboardInterrupt:
         logging.info("\nDownload interrupted by user.")
         sys.exit(1)
     except Exception as e:
+        if args.json:
+            import json
+            print(json.dumps([{"status": "error", "message": str(e)}], indent=2))
+            sys.exit(1)
         logging.error(f"easyget error: {e}")
         sys.exit(1)
