@@ -1,6 +1,6 @@
 import json
 import re
-from typing import Dict, Optional, Iterator
+from typing import Callable, Dict, Iterator, List, Optional
 
 class Response:
     """
@@ -13,6 +13,8 @@ class Response:
         self._content: Optional[bytes] = None
         self._text: Optional[str] = None
         self._stream_response = None # Placeholder for the raw response object
+        self._closed = False
+        self._close_callbacks: List[Callable[[], None]] = []
 
     @property
     def content(self) -> bytes:
@@ -74,11 +76,31 @@ class Response:
                 self.close()
 
     def close(self):
+        if self._closed:
+            return
+
         if self._stream_response:
             try:
                 self._stream_response.close()
             finally:
                 self._stream_response = None
+        self._closed = True
+
+        callbacks = self._close_callbacks[:]
+        self._close_callbacks.clear()
+        for callback in callbacks:
+            try:
+                callback()
+            except Exception:
+                # Close path must be best-effort and never mask caller errors.
+                pass
+
+    def add_close_callback(self, callback: Callable[[], None]):
+        self._close_callbacks.append(callback)
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
 
     def raise_for_status(self):
         if 400 <= self.status_code < 600:

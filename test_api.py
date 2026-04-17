@@ -115,7 +115,42 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(json.loads(req.data.decode("utf-8")), {"a": 1})
         self.assertEqual(req.get_header("Content-type"), "application/json")
 
+    def test_post_files_builds_multipart_body(self):
+        response = make_http_response(status=200)
+        opener = MagicMock()
+        opener.open.return_value = response
+        opener_no_redirect = MagicMock()
+        opener_no_redirect.open.return_value = response
+
+        with patch("easyget.session.urllib.request.build_opener", side_effect=[opener, opener_no_redirect]):
+            s = easyget.Session()
+            s.post(
+                "http://example.com/upload",
+                data={"name": "demo"},
+                files={"file": ("hello.txt", b"hello world", "text/plain")},
+            )
+
+        req = opener.open.call_args.args[0]
+        content_type = req.get_header("Content-type")
+        self.assertTrue(content_type.startswith("multipart/form-data; boundary="))
+        body = req.data
+        self.assertIn(b'Content-Disposition: form-data; name="name"', body)
+        self.assertIn(b'Content-Disposition: form-data; name="file"; filename="hello.txt"', body)
+        self.assertIn(b"hello world", body)
+
     def test_data_and_json_together_raise_type_error(self):
+        response = make_http_response(status=200)
+        opener = MagicMock()
+        opener.open.return_value = response
+        opener_no_redirect = MagicMock()
+        opener_no_redirect.open.return_value = response
+
+        with patch("easyget.session.urllib.request.build_opener", side_effect=[opener, opener_no_redirect]):
+                s = easyget.Session()
+                with self.assertRaises(TypeError):
+                    s.post("http://example.com/form", data={"a": "1"}, json={"a": 1})
+
+    def test_json_and_files_together_raise_type_error(self):
         response = make_http_response(status=200)
         opener = MagicMock()
         opener.open.return_value = response
@@ -125,7 +160,7 @@ class TestAPI(unittest.TestCase):
         with patch("easyget.session.urllib.request.build_opener", side_effect=[opener, opener_no_redirect]):
             s = easyget.Session()
             with self.assertRaises(TypeError):
-                s.post("http://example.com/form", data={"a": "1"}, json={"a": 1})
+                s.post("http://example.com/form", json={"a": 1}, files={"file": b"x"})
 
     def test_allow_redirects_false_uses_no_redirect_opener(self):
         response = make_http_response(status=302, headers={"Location": "http://example.com/next"})
@@ -153,6 +188,21 @@ class TestAPI(unittest.TestCase):
             s.get("http://example.com", timeout=(1.0, 2.5))
 
         self.assertEqual(opener.open.call_args.kwargs["timeout"], 2.5)
+
+    def test_top_level_stream_request_lifetime(self):
+        response = make_http_response(status=200, body=b"streamed")
+        response.read.side_effect = [b"str", b"eam", b"ed", b""]
+        opener = MagicMock()
+        opener.open.return_value = response
+        opener_no_redirect = MagicMock()
+        opener_no_redirect.open.return_value = response
+
+        with patch("easyget.session.urllib.request.build_opener", side_effect=[opener, opener_no_redirect]):
+            resp = easyget.get("http://example.com", stream=True)
+            self.assertFalse(resp.closed)
+            self.assertEqual(next(resp.iter_bytes(3)), b"str")
+            resp.close()
+            self.assertTrue(resp.closed)
 
     def test_response_text_respects_charset(self):
         response = easyget.Response(

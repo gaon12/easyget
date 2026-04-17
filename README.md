@@ -109,6 +109,14 @@ import easyget
 resp = easyget.get("https://httpbin.org/get", params={"q": "easyget"})
 resp.raise_for_status()
 print(resp.status_code, resp.json())
+
+# Multipart upload
+upload = easyget.post(
+    "https://httpbin.org/post",
+    data={"name": "demo"},
+    files={"file": ("hello.txt", b"hello world", "text/plain")},
+)
+print(upload.status_code)
 ```
 
 ```python
@@ -117,9 +125,10 @@ import easyget
 
 async def main():
     async with easyget.AsyncSession() as session:
-        resp = await session.get("https://httpbin.org/get")
-        data = await resp.json()
-        print(resp.status, data)
+        # aiohttp-like: async with session.get(...)
+        async with session.get("https://httpbin.org/get") as resp:
+            data = await resp.json()
+            print(resp.status, data)
 
 asyncio.run(main())
 ```
