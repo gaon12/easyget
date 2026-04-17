@@ -342,8 +342,12 @@ class Session:
                 response._content = e.read()
             return response
         except urllib.error.URLError as e:
-            from .exceptions import DownloadError
-            raise DownloadError(f"Request failed: {e}")
+            from .exceptions import RequestError
+            raise RequestError(
+                f"Request failed: {e}",
+                hint="Check network connectivity, DNS, proxy, and TLS settings.",
+                context={"url": url, "reason": str(e.reason) if hasattr(e, "reason") else str(e)},
+            )
 
     def get(self, url: str, **kwargs) -> Response:
         return self.request('GET', url, **kwargs)
