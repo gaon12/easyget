@@ -141,6 +141,16 @@ async def main():
 asyncio.run(main())
 ```
 
+### 9. curl-style HTTP request mode / curl 스타일 HTTP 요청 모드
+
+```bash
+# POST JSON request
+easyget -X POST --json-data '{"name":"easyget"}' -i -L https://httpbin.org/post
+
+# HEAD request
+easyget -I https://example.com
+```
+
 ---
 
 ## Input File Format / 입력 파일 형식
