@@ -9,12 +9,35 @@ from easyget.downloader import download_file, download_range
 from easyget.utils import parse_speed, SpeedLimiter, safe_rename, ProgressBar
 from easyget.models import Response
 from easyget.exceptions import DownloadError
+from easyget.wildcard import expand_wildcard_url
 
 class TestEasyGet(unittest.TestCase):
 
     def test_cli_module_imports(self):
         module = importlib.import_module("easyget.cli")
         self.assertTrue(callable(getattr(module, "main", None)))
+
+    @patch("easyget.wildcard.Session")
+    def test_wildcard_expansion_matches_links(self, mock_session_cls):
+        html = """
+        <a href="a.zip">a.zip</a>
+        <a href="b.txt">b.txt</a>
+        <a href="/files/c.zip?token=1">c.zip</a>
+        """
+        response = Response(status_code=200, headers={}, url="http://example.com/files/")
+        response._content = html.encode("utf-8")
+        mock_session = MagicMock()
+        mock_session.get.return_value = response
+        mock_session_cls.return_value = mock_session
+
+        matches = expand_wildcard_url("http://example.com/files/*.zip", headers={})
+        self.assertEqual(
+            matches,
+            [
+                ("http://example.com/files/a.zip", "a.zip"),
+                ("http://example.com/files/c.zip?token=1", "c.zip"),
+            ],
+        )
 
     def test_parse_speed(self):
         self.assertEqual(parse_speed("1M"), 1024 * 1024)
