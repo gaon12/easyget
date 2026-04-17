@@ -1,4 +1,5 @@
 import json
+import re
 from typing import Dict, Optional, Iterator
 
 class Response:
@@ -17,7 +18,10 @@ class Response:
     def content(self) -> bytes:
         if self._content is None:
             if self._stream_response:
-                self._content = self._stream_response.read()
+                try:
+                    self._content = self._stream_response.read()
+                finally:
+                    self.close()
             else:
                 self._content = b""
         return self._content
@@ -25,19 +29,47 @@ class Response:
     @property
     def text(self) -> str:
         if self._text is None:
-            encoding = 'utf-8' # Simplified: should detect from headers
-            self._text = self.content.decode(encoding, errors='ignore')
+            encoding = "utf-8"
+            content_type = self.headers.get("Content-Type", "")
+            match = re.search(r"charset=([^\s;]+)", content_type, re.IGNORECASE)
+            if match:
+                encoding = match.group(1).strip("'\"")
+
+            raw = self.content
+            try:
+                self._text = raw.decode(encoding, errors="replace")
+            except LookupError:
+                self._text = raw.decode("utf-8", errors="replace")
         return self._text
 
     def json(self):
         return json.loads(self.text)
 
     def iter_bytes(self, chunk_size: int = 1024) -> Iterator[bytes]:
+        if self._content is not None:
+            for idx in range(0, len(self._content), chunk_size):
+                yield self._content[idx:idx + chunk_size]
+            return
+
         if self._stream_response:
-            while True:
-                chunk = self._stream_response.read(chunk_size)
-                if not chunk: break
-                yield chunk
+            chunks = []
+            try:
+                while True:
+                    chunk = self._stream_response.read(chunk_size)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    yield chunk
+            finally:
+                self._content = b"".join(chunks)
+                self.close()
+
+    def close(self):
+        if self._stream_response:
+            try:
+                self._stream_response.close()
+            finally:
+                self._stream_response = None
 
     def raise_for_status(self):
         if 400 <= self.status_code < 600:
