@@ -1,5 +1,6 @@
 import io
 import json
+import base64
 import unittest
 from unittest.mock import MagicMock, patch
 from urllib.parse import parse_qs, urlsplit
@@ -137,6 +138,27 @@ class TestAPI(unittest.TestCase):
         self.assertIn(b'Content-Disposition: form-data; name="name"', body)
         self.assertIn(b'Content-Disposition: form-data; name="file"; filename="hello.txt"', body)
         self.assertIn(b"hello world", body)
+
+    def test_auth_and_cookies_headers_are_applied(self):
+        response = make_http_response(status=200)
+        opener = MagicMock()
+        opener.open.return_value = response
+        opener_no_redirect = MagicMock()
+        opener_no_redirect.open.return_value = response
+
+        with patch("easyget.session.urllib.request.build_opener", side_effect=[opener, opener_no_redirect]):
+            s = easyget.Session()
+            s.get(
+                "http://example.com/resource",
+                auth=("user", "pass"),
+                cookies={"sid": "abc", "mode": "test"},
+            )
+
+        req = opener.open.call_args.args[0]
+        expected_auth = "Basic " + base64.b64encode(b"user:pass").decode("ascii")
+        self.assertEqual(req.get_header("Authorization"), expected_auth)
+        self.assertIn("sid=abc", req.get_header("Cookie"))
+        self.assertIn("mode=test", req.get_header("Cookie"))
 
     def test_data_and_json_together_raise_type_error(self):
         response = make_http_response(status=200)

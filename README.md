@@ -110,6 +110,14 @@ resp = easyget.get("https://httpbin.org/get", params={"q": "easyget"})
 resp.raise_for_status()
 print(resp.status_code, resp.json())
 
+# auth + cookies
+secure = easyget.get(
+    "https://httpbin.org/headers",
+    auth=("user", "pass"),
+    cookies={"sid": "abc"},
+)
+print(secure.status_code)
+
 # Multipart upload
 upload = easyget.post(
     "https://httpbin.org/post",

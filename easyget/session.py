@@ -1,4 +1,5 @@
 import json as jsonlib
+import base64
 import http.cookiejar
 import mimetypes
 import os
@@ -43,6 +44,17 @@ class Session:
         new_pairs = urllib.parse.parse_qsl(new_query, keep_blank_values=True)
         merged_query = urllib.parse.urlencode(existing_pairs + new_pairs, doseq=True)
         return urllib.parse.urlunsplit((split.scheme, split.netloc, split.path, merged_query, split.fragment))
+
+    @staticmethod
+    def _encode_basic_auth(auth: Tuple[str, str]) -> str:
+        username, password = auth
+        token = f"{username}:{password}".encode("utf-8")
+        return "Basic " + base64.b64encode(token).decode("ascii")
+
+    @staticmethod
+    def _format_cookie_header(cookies: Dict[str, Any]) -> str:
+        pairs = [f"{key}={value}" for key, value in cookies.items()]
+        return "; ".join(pairs)
 
     @staticmethod
     def _read_file_payload(file_data: Any) -> bytes:
@@ -177,6 +189,8 @@ class Session:
                 data: Optional[Any] = None,
                 json: Optional[Any] = None,
                 files: Optional[Dict[str, Any]] = None,
+                auth: Optional[Tuple[str, str]] = None,
+                cookies: Optional[Dict[str, Any]] = None,
                 headers: Optional[Dict[str, str]] = None,
                 timeout: TimeoutType = 30,
                 stream: bool = False,
@@ -187,6 +201,10 @@ class Session:
         req_headers = self.headers.copy()
         if headers:
             req_headers.update(headers)
+        if auth is not None:
+            req_headers["Authorization"] = self._encode_basic_auth(auth)
+        if cookies:
+            req_headers["Cookie"] = self._format_cookie_header(cookies)
         req_data = self._normalize_data(data, json, files, req_headers)
         normalized_timeout = self._normalize_timeout(timeout)
         req = urllib.request.Request(url, data=req_data, headers=req_headers, method=method)
