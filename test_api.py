@@ -362,6 +362,14 @@ class TestAPI(unittest.TestCase):
         response.set_auto_decompress(True)
         self.assertEqual(response.content, b"hello gzip")
 
+    def test_response_summary_compact_for_ai(self):
+        response = easyget.Response(status_code=200, headers={"Content-Type": "text/plain"}, url="http://example.com")
+        response._content = b"hello world"
+        summary = response.summary(include_body=True, max_body_chars=5, compact=True)
+        self.assertEqual(summary["st"], 200)
+        self.assertEqual(summary["ok"], 1)
+        self.assertEqual(summary["b"], "hello")
+
     def test_response_hook_can_modify_response(self):
         response = make_http_response(status=200, body=b"ok")
         opener = MagicMock()
