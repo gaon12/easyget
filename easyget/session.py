@@ -33,7 +33,7 @@ class Session:
             return data
         if isinstance(data, str):
             return data.encode("utf-8")
-        if isinstance(data, dict):
+        if isinstance(data, (dict, list, tuple)):
             req_headers.setdefault("Content-Type", "application/x-www-form-urlencoded")
             return urllib.parse.urlencode(data, doseq=True).encode("utf-8")
 

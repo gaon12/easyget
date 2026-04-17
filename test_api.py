@@ -66,6 +66,21 @@ class TestAPI(unittest.TestCase):
         body = req.data.decode("utf-8")
         self.assertEqual(parse_qs(body), {"a": ["1"], "b": ["2"]})
 
+    @patch("urllib.request.urlopen")
+    def test_post_sequence_body_is_form_encoded(self, mock_urlopen):
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.headers = {}
+        mock_resp.read.return_value = b"ok"
+        mock_urlopen.return_value = mock_resp
+
+        s = easyget.Session()
+        s.post("http://example.com/form", data=[("a", "1"), ("a", "2")])
+
+        req = mock_urlopen.call_args.args[0]
+        body = req.data.decode("utf-8")
+        self.assertEqual(parse_qs(body), {"a": ["1", "2"]})
+
     def test_response_text_respects_charset(self):
         response = easyget.Response(
             status_code=200,
