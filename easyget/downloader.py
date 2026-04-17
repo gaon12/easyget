@@ -84,7 +84,7 @@ def download_range(url: str, start: int, end: int, headers: Dict[str, str],
                     if not chunk: break
                     if limiter: limiter.wait(len(chunk))
                     f.write(chunk)
-                    pbar.update(len(chunk))
+                    if pbar: pbar.update(len(chunk))
     except Exception as e:
         logging.error(f"Range download failed for {url} ({start}-{end}): {e}")
         error_event.set()
@@ -92,7 +92,8 @@ def download_range(url: str, start: int, end: int, headers: Dict[str, str],
 def download_file(url: str, output: Optional[str] = None, resume: bool = False, threads: int = 1,
                   max_speed: Optional[str] = None, headers: Optional[Dict[str, str]] = None,
                   progress_position: int = 0, ignore_cache: bool = False, mode: str = "fast",
-                  force: bool = False, skip_existing: bool = False, retries: int = 3) -> None:
+                  force: bool = False, skip_existing: bool = False, retries: int = 3,
+                  show_progress: bool = True) -> None:
     """
     Main orchestrator for downloading a single file with retries and integrity checks.
     """
@@ -144,8 +145,8 @@ def download_file(url: str, output: Optional[str] = None, resume: bool = False, 
             parsed_speed = parse_speed(max_speed) if max_speed else None
             limiter = SpeedLimiter(parsed_speed) if parsed_speed else None
 
-            pbar = ProgressBar(total_size, desc=os.path.basename(output)[:20], position=progress_position)
-            if downloaded_size > 0: pbar.update(downloaded_size)
+            pbar = ProgressBar(total_size, desc=os.path.basename(output)[:20], position=progress_position) if show_progress else None
+            if pbar and downloaded_size > 0: pbar.update(downloaded_size)
 
             if threads == 1:
                 req = urllib.request.Request(url, headers=headers)
@@ -159,7 +160,7 @@ def download_file(url: str, output: Optional[str] = None, resume: bool = False, 
                             if not chunk: break
                             if limiter: limiter.wait(len(chunk))
                             f.write(chunk)
-                            pbar.update(len(chunk))
+                            if pbar: pbar.update(len(chunk))
             else:
                 if not os.path.exists(tmp_path):
                     with open(tmp_path, 'wb') as f:
@@ -175,6 +176,8 @@ def download_file(url: str, output: Optional[str] = None, resume: bool = False, 
                 
                 thread_pool = []
                 for start, end in range_list:
+                    # Note: download_range always expects a pbar (which might be None or a dummy)
+                    # For simplicity, we pass None if show_progress is False and handle it in download_range
                     t = threading.Thread(target=download_range, args=(url, start, end, headers, tmp_path, pbar, limiter, error_event))
                     thread_pool.append(t)
                     t.start()
@@ -183,7 +186,7 @@ def download_file(url: str, output: Optional[str] = None, resume: bool = False, 
                 if error_event.is_set():
                     raise DownloadError(f"One or more threads failed for {url}")
 
-            pbar.close()
+            if pbar: pbar.close()
             if not safe_rename(tmp_path, output, force, skip_existing):
                 raise DownloadError(f"Failed to save {output}")
             
@@ -193,12 +196,12 @@ def download_file(url: str, output: Optional[str] = None, resume: bool = False, 
         except (urllib.error.URLError, DownloadError, IntegrityError, TimeoutError) as e:
             attempt += 1
             if attempt > retries:
-                if 'pbar' in locals(): pbar.close()
+                if 'pbar' in locals() and pbar: pbar.close()
                 raise DownloadError(f"Download failed after {retries} retries: {e}") from e
             
             wait_time = 2 ** attempt
             logging.warning(f"\nDownload failed: {e}. Retrying in {wait_time}s... ({attempt}/{retries})")
             time.sleep(wait_time)
         except Exception as e:
-            if 'pbar' in locals(): pbar.close()
+            if 'pbar' in locals() and pbar: pbar.close()
             raise DownloadError(f"Unrecoverable error: {e}") from e
