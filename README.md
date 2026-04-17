@@ -19,6 +19,7 @@ It supports modern features like multithreading, speed limits, resume support, w
 - ✅ **Progress bars** (total file count and individual download progress)
 - ✅ **Ignore cache** (`--no-cache`, ignore `.part` files)
 - ✅ **Basic auth / Bearer token support**
+- ✅ **Python HTTP client API (sync + async)** for `requests`/`aiohttp`-style migration
 - ✅ **Download modes** (`--mode fast` or `accurate`)
   - `fast` (default): minimizes metadata probes and downloads immediately in common single-file cases
   - `accurate`: probes metadata (HEAD/Range) to improve size/range detection and multithread decisions
@@ -33,6 +34,7 @@ It supports modern features like multithreading, speed limits, resume support, w
 - ✅ **진행률 표시** (총 파일 수 및 개별 파일 다운로드)
 - ✅ **캐시 무시 기능** (`--no-cache`, `.part` 파일 무시)
 - ✅ **기본 인증 / Bearer 토큰 지원**
+- ✅ **Python HTTP 클라이언트 API (동기 + 비동기)** (`requests`/`aiohttp` 마이그레이션 용도)
 - ✅ **다운로드 모드** (`--mode fast` 또는 `accurate`)
   - `fast` (기본값): 일반적인 단일 파일 다운로드에서 메타데이터 조회를 최소화하고 즉시 다운로드
   - `accurate`: HEAD/Range 기반 메타데이터를 조회해 크기/Range/멀티스레드 판단 정확도를 높임
@@ -96,6 +98,30 @@ easyget urls.csv
 
 ```bash
 easyget "https://example.com/files/*.zip"
+```
+
+### 8. Python API (sync + async) / 파이썬 API (동기 + 비동기)
+
+```python
+import easyget
+
+# Sync (requests-like)
+resp = easyget.get("https://httpbin.org/get", params={"q": "easyget"})
+resp.raise_for_status()
+print(resp.status_code, resp.json())
+```
+
+```python
+import asyncio
+import easyget
+
+async def main():
+    async with easyget.AsyncSession() as session:
+        resp = await session.get("https://httpbin.org/get")
+        data = await resp.json()
+        print(resp.status, data)
+
+asyncio.run(main())
 ```
 
 ---
