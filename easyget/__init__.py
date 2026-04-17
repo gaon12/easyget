@@ -14,6 +14,7 @@ from .session import (
 from .async_session import (
     AsyncSession,
     AsyncResponse,
+    AsyncRequestContextManager,
     ClientSession,
     arequest,
     aget,
