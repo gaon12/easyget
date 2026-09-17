@@ -4,7 +4,7 @@ import os
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout, redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import MagicMock, patch
 
 import easyget
@@ -13,12 +13,16 @@ from easyget import cli
 
 class TestCLI(unittest.TestCase):
     def test_parse_args_accepts_uppercase_o(self):
-        with patch.object(sys, "argv", ["easyget", "-O", "saved.txt", "http://example.com/file.txt"]):
+        with patch.object(
+            sys, "argv", ["easyget", "-O", "saved.txt", "http://example.com/file.txt"]
+        ):
             args = cli.parse_args()
         self.assertEqual(args.output, "saved.txt")
 
     def test_parse_args_supports_continue_alias(self):
-        with patch.object(sys, "argv", ["easyget", "--continue", "http://example.com/file.txt"]):
+        with patch.object(
+            sys, "argv", ["easyget", "--continue", "http://example.com/file.txt"]
+        ):
             args = cli.parse_args()
         self.assertTrue(args.resume)
 
@@ -28,9 +32,13 @@ class TestCLI(unittest.TestCase):
         err = io.StringIO()
         argv = ["easyget", "--json", "http://example.com/file.txt"]
 
-        with patch.object(sys, "argv", argv), redirect_stdout(out), redirect_stderr(err):
-            with self.assertRaises(SystemExit) as ctx:
-                cli.main()
+        with (
+            patch.object(sys, "argv", argv),
+            redirect_stdout(out),
+            redirect_stderr(err),
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            cli.main()
 
         self.assertEqual(ctx.exception.code, 1)
         payload = json.loads(out.getvalue())
@@ -40,7 +48,11 @@ class TestCLI(unittest.TestCase):
 
     @patch("easyget.cli.Session")
     def test_request_mode_json_payload(self, mock_session_cls):
-        response = easyget.Response(status_code=200, headers={"Content-Type": "application/json"}, url="http://example.com")
+        response = easyget.Response(
+            status_code=200,
+            headers={"Content-Type": "application/json"},
+            url="http://example.com",
+        )
         response._content = b'{"ok": true}'
         mock_session = MagicMock()
         mock_session.request.return_value = response
@@ -57,9 +69,13 @@ class TestCLI(unittest.TestCase):
             '{"name":"easyget"}',
             "http://example.com",
         ]
-        with patch.object(sys, "argv", argv), redirect_stdout(out), redirect_stderr(err):
-            with self.assertRaises(SystemExit) as ctx:
-                cli.main()
+        with (
+            patch.object(sys, "argv", argv),
+            redirect_stdout(out),
+            redirect_stderr(err),
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            cli.main()
 
         self.assertEqual(ctx.exception.code, 0)
         payload = json.loads(out.getvalue())
@@ -75,7 +91,9 @@ class TestCLI(unittest.TestCase):
 
     @patch("easyget.cli.Session")
     def test_request_mode_head_uses_head_method(self, mock_session_cls):
-        response = easyget.Response(status_code=200, headers={}, url="http://example.com")
+        response = easyget.Response(
+            status_code=200, headers={}, url="http://example.com"
+        )
         response._content = b""
         mock_session = MagicMock()
         mock_session.request.return_value = response
@@ -83,9 +101,12 @@ class TestCLI(unittest.TestCase):
 
         out = io.StringIO()
         argv = ["easyget", "-I", "--json", "http://example.com"]
-        with patch.object(sys, "argv", argv), redirect_stdout(out):
-            with self.assertRaises(SystemExit) as ctx:
-                cli.main()
+        with (
+            patch.object(sys, "argv", argv),
+            redirect_stdout(out),
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            cli.main()
 
         self.assertEqual(ctx.exception.code, 0)
         payload = json.loads(out.getvalue())
@@ -95,7 +116,9 @@ class TestCLI(unittest.TestCase):
 
     @patch("easyget.cli.Session")
     def test_request_mode_transport_flags(self, mock_session_cls):
-        response = easyget.Response(status_code=200, headers={}, url="https://example.com")
+        response = easyget.Response(
+            status_code=200, headers={}, url="https://example.com"
+        )
         response._content = b"ok"
         mock_session = MagicMock()
         mock_session.request.return_value = response
@@ -119,9 +142,12 @@ class TestCLI(unittest.TestCase):
             "--compressed",
             "https://example.com",
         ]
-        with patch.object(sys, "argv", argv), redirect_stdout(out):
-            with self.assertRaises(SystemExit) as ctx:
-                cli.main()
+        with (
+            patch.object(sys, "argv", argv),
+            redirect_stdout(out),
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            cli.main()
 
         self.assertEqual(ctx.exception.code, 0)
         payload = json.loads(out.getvalue())
@@ -135,7 +161,9 @@ class TestCLI(unittest.TestCase):
 
     @patch("easyget.cli.Session")
     def test_request_mode_output_select_status(self, mock_session_cls):
-        response = easyget.Response(status_code=204, headers={"X-Test": "v"}, url="https://example.com")
+        response = easyget.Response(
+            status_code=204, headers={"X-Test": "v"}, url="https://example.com"
+        )
         response._content = b""
         mock_session = MagicMock()
         mock_session.request.return_value = response
@@ -143,9 +171,12 @@ class TestCLI(unittest.TestCase):
 
         out = io.StringIO()
         argv = ["easyget", "--json", "--output-select", "status", "https://example.com"]
-        with patch.object(sys, "argv", argv), redirect_stdout(out):
-            with self.assertRaises(SystemExit) as ctx:
-                cli.main()
+        with (
+            patch.object(sys, "argv", argv),
+            redirect_stdout(out),
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            cli.main()
 
         self.assertEqual(ctx.exception.code, 0)
         payload = json.loads(out.getvalue())
@@ -154,7 +185,9 @@ class TestCLI(unittest.TestCase):
 
     @patch("easyget.cli.Session")
     def test_request_mode_output_select_headers_text(self, mock_session_cls):
-        response = easyget.Response(status_code=200, headers={"X-Test": "v"}, url="https://example.com")
+        response = easyget.Response(
+            status_code=200, headers={"X-Test": "v"}, url="https://example.com"
+        )
         response._content = b"body"
         mock_session = MagicMock()
         mock_session.request.return_value = response
@@ -162,9 +195,12 @@ class TestCLI(unittest.TestCase):
 
         out = io.StringIO()
         argv = ["easyget", "--output-select", "headers", "https://example.com"]
-        with patch.object(sys, "argv", argv), redirect_stdout(out):
-            with self.assertRaises(SystemExit) as ctx:
-                cli.main()
+        with (
+            patch.object(sys, "argv", argv),
+            redirect_stdout(out),
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            cli.main()
 
         self.assertEqual(ctx.exception.code, 0)
         printed = out.getvalue()
@@ -174,7 +210,9 @@ class TestCLI(unittest.TestCase):
 
     @patch("easyget.cli.Session")
     def test_request_mode_data_urlencode_builds_body(self, mock_session_cls):
-        response = easyget.Response(status_code=200, headers={}, url="https://example.com")
+        response = easyget.Response(
+            status_code=200, headers={}, url="https://example.com"
+        )
         response._content = b"ok"
         mock_session = MagicMock()
         mock_session.request.return_value = response
@@ -190,9 +228,12 @@ class TestCLI(unittest.TestCase):
             "lang=ko",
             "https://example.com",
         ]
-        with patch.object(sys, "argv", argv), redirect_stdout(out):
-            with self.assertRaises(SystemExit) as ctx:
-                cli.main()
+        with (
+            patch.object(sys, "argv", argv),
+            redirect_stdout(out),
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            cli.main()
 
         self.assertEqual(ctx.exception.code, 0)
         payload = json.loads(out.getvalue())
@@ -200,11 +241,15 @@ class TestCLI(unittest.TestCase):
         kwargs = mock_session.request.call_args.kwargs
         self.assertEqual(kwargs["method"], "POST")
         self.assertEqual(kwargs["data"], "q=hello+world&lang=ko")
-        self.assertEqual(kwargs["headers"]["Content-Type"], "application/x-www-form-urlencoded")
+        self.assertEqual(
+            kwargs["headers"]["Content-Type"], "application/x-www-form-urlencoded"
+        )
 
     @patch("easyget.cli.Session")
     def test_request_mode_form_parsing(self, mock_session_cls):
-        response = easyget.Response(status_code=200, headers={}, url="https://example.com")
+        response = easyget.Response(
+            status_code=200, headers={}, url="https://example.com"
+        )
         response._content = b"ok"
         mock_session = MagicMock()
         mock_session.request.return_value = response
@@ -225,9 +270,12 @@ class TestCLI(unittest.TestCase):
                 f"file=@{file_path};type=text/plain",
                 "https://example.com",
             ]
-            with patch.object(sys, "argv", argv), redirect_stdout(out):
-                with self.assertRaises(SystemExit) as ctx:
-                    cli.main()
+            with (
+                patch.object(sys, "argv", argv),
+                redirect_stdout(out),
+                self.assertRaises(SystemExit) as ctx,
+            ):
+                cli.main()
 
         self.assertEqual(ctx.exception.code, 0)
         payload = json.loads(out.getvalue())
@@ -245,14 +293,28 @@ class TestCLI(unittest.TestCase):
     def test_ai_mode_compact_error_payload(self, _mock_download):
         out = io.StringIO()
         argv = ["easyget", "--ai", "http://example.com/file.txt"]
-        with patch.object(sys, "argv", argv), redirect_stdout(out):
-            with self.assertRaises(SystemExit) as ctx:
-                cli.main()
+        with (
+            patch.object(sys, "argv", argv),
+            redirect_stdout(out),
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            cli.main()
 
         self.assertEqual(ctx.exception.code, 1)
         payload = json.loads(out.getvalue())
         self.assertEqual(payload["ok"], 0)
         self.assertEqual(payload["e"]["c"], "UNEXPECTED_ERROR")
+
+    @patch("easyget.cli.download_file")
+    def test_location_flag_alone_keeps_download_mode(self, mock_download):
+        out = io.StringIO()
+        argv = ["easyget", "--json", "-L", "http://example.com/file.txt"]
+        with patch.object(sys, "argv", argv), redirect_stdout(out):
+            cli.main()
+
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["mode"], "download")
+        mock_download.assert_called_once()
 
     @patch("easyget.cli.download_file")
     def test_download_mode_forwards_retry_and_timestamping(self, mock_download):
