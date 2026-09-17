@@ -24,7 +24,7 @@ from .utils import (
 logger = logging.getLogger(__name__)
 
 # Constants / 상수
-CHUNK_SIZE = 1024 * 64  # 64KB buffer for optimal I/O / 최적의 I/O를 위한 64KB 버퍼
+CHUNK_SIZE = 1024 * 256  # 256KB buffer for optimal I/O / 최적의 I/O를 위한 256KB 버퍼
 
 
 def _parse_http_datetime(http_datetime: str) -> float | None:

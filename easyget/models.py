@@ -163,11 +163,24 @@ class Response:
             # 한 번만 소비하며 메모리에 보관하지 않습니다.
             source = self._decoded_stream()
             try:
-                while True:
-                    chunk = source.read(chunk_size)
-                    if not chunk:
-                        break
-                    yield chunk
+                # readinto fills a reused buffer straight from the socket,
+                # skipping the temporary bytes object read() allocates. Only
+                # trust it when the class really defines it — a MagicMock
+                # auto-fakes any attribute and would hand back a Mock, not
+                # a byte count.
+                if getattr(type(source), "readinto", None) is not None:
+                    buffer = bytearray(chunk_size)
+                    while True:
+                        count = source.readinto(buffer)
+                        if not count:
+                            break
+                        yield bytes(buffer[:count])
+                else:
+                    while True:
+                        chunk = source.read(chunk_size)
+                        if not chunk:
+                            break
+                        yield chunk
             except (OSError, http.client.HTTPException) as e:
                 # Transport errors mid-body (connection reset, truncated
                 # body, timeout) are surfaced as RequestError so callers can
