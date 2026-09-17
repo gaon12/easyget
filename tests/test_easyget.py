@@ -1,6 +1,8 @@
 import importlib
 import io
+import json
 import os
+import re
 import tempfile
 import threading
 import unittest
@@ -79,13 +81,33 @@ class TestEasyGet(unittest.TestCase):
         self.assertTrue(error_event.is_set())
 
     def test_speed_limiter(self):
-        with patch("time.sleep") as mock_sleep:
+        # Freeze the clock so slots are fully deterministic.
+        with (
+            patch("time.sleep") as mock_sleep,
+            patch("time.monotonic", return_value=1000.0),
+        ):
             limiter = SpeedLimiter(100)  # 100 bytes/sec
-            limiter.start_time = 1000.0
-            with patch("time.monotonic", return_value=1000.1):
-                limiter.wait(50)  # expected 0.5s. elapsed 0.1s. sleep 0.4s.
-                args, _ = mock_sleep.call_args
-                self.assertAlmostEqual(args[0], 0.4, places=5)
+            limiter.wait(50)  # slot at t=1000.0 — already arrived, no sleep
+            mock_sleep.assert_not_called()
+            limiter.wait(50)  # next slot at t=1000.5 → sleep 0.5s
+            args, _ = mock_sleep.call_args
+            self.assertAlmostEqual(args[0], 0.5, places=5)
+
+    def test_speed_limiter_serializes_slots_across_calls(self):
+        # Every chunk reserves the next free slot, so concurrent callers share
+        # one rate budget instead of each sleeping off the combined debt.
+        with (
+            patch("time.sleep") as mock_sleep,
+            patch("time.monotonic", return_value=1000.0),
+        ):
+            limiter = SpeedLimiter(100)
+            limiter.wait(10)  # slot 1000.0 → no wait
+            limiter.wait(10)  # slot 1000.1 → sleep 0.1
+            limiter.wait(10)  # slot 1000.2 → sleep 0.2
+            delays = [call.args[0] for call in mock_sleep.call_args_list]
+            self.assertEqual(len(delays), 2)
+            self.assertAlmostEqual(delays[0], 0.1, places=5)
+            self.assertAlmostEqual(delays[1], 0.2, places=5)
 
     def test_filename_from_url_uses_index_html_fallback(self):
         self.assertEqual(get_filename_from_url("http://example.com/dir/"), "index.html")
@@ -353,6 +375,197 @@ class TestEasyGet(unittest.TestCase):
 
         self.assertEqual(mock_session.get.call_count, 1)
         mock_sleep.assert_not_called()
+
+    @staticmethod
+    def _range_serving_session(payload: bytes) -> MagicMock:
+        """Mock Session whose get() answers Range requests with the right slice."""
+
+        def _get(_url, headers=None, **_kwargs):
+            match = re.fullmatch(r"bytes=(\d+)-(\d+)", (headers or {}).get("Range", ""))
+            if not match:
+                raise AssertionError(f"expected a Range header, got {headers!r}")
+            start, end = int(match[1]), int(match[2])
+            resp = Response(status_code=206, headers={}, url=_url)
+            resp._stream_response = io.BytesIO(payload[start : end + 1])
+            return resp
+
+        session = MagicMock()
+        session.get.side_effect = _get
+        return session
+
+    @staticmethod
+    def _write_segment_meta(path: str, ranges: list[dict], size: int) -> None:
+        meta = {
+            "version": 1,
+            "size": size,
+            "etag": None,
+            "last_modified": None,
+            "ranges": ranges,
+        }
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(meta, f)
+
+    @patch("easyget.downloader.get_file_info")
+    @patch("easyget.downloader.Session")
+    def test_multithread_download_cleans_meta_on_success(
+        self, mock_session_cls, mock_info
+    ):
+        payload = b"0123456789abcdefghij"  # 20 bytes → two 10-byte ranges
+        mock_info.return_value = (len(payload), True, {})
+        mock_session = self._range_serving_session(payload)
+        mock_session_cls.return_value = mock_session
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = f"{tmpdir}/out.bin"
+            info = download_file(
+                "http://example.com/f.bin",
+                output=output,
+                threads=2,
+                retries=0,
+                show_progress=False,
+            )
+
+            with open(output, "rb") as f:
+                self.assertEqual(f.read(), payload)
+            self.assertEqual(info["bytes"], len(payload))
+            # The .part and its .meta sidecar must not outlive a clean finish.
+            self.assertFalse(os.path.exists(output + ".part"))
+            self.assertFalse(os.path.exists(output + ".part.meta"))
+
+    @patch("easyget.downloader.get_file_info")
+    @patch("easyget.downloader.Session")
+    def test_multithread_resume_fetches_only_missing_segments(
+        self, mock_session_cls, mock_info
+    ):
+        payload = b"0123456789"
+        mock_info.return_value = (len(payload), True, {})
+        mock_session = self._range_serving_session(payload)
+        mock_session_cls.return_value = mock_session
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = f"{tmpdir}/out.bin"
+            # Simulate an interrupted segmented download: a preallocated .part
+            # whose first half holds real bytes and whose second half is zeros.
+            with open(output + ".part", "wb") as f:
+                f.truncate(len(payload))
+            with open(output + ".part", "r+b") as f:
+                f.write(payload[:5])
+            self._write_segment_meta(
+                output + ".part.meta",
+                ranges=[
+                    {"start": 0, "end": 4, "done": True},
+                    {"start": 5, "end": 9, "done": False},
+                ],
+                size=len(payload),
+            )
+
+            info = download_file(
+                "http://example.com/f.bin",
+                output=output,
+                threads=2,
+                resume=True,
+                retries=0,
+                show_progress=False,
+            )
+
+            with open(output, "rb") as f:
+                self.assertEqual(f.read(), payload)
+            self.assertFalse(info["skipped"])
+            # Only the pending range was requested.
+            self.assertEqual(mock_session.get.call_count, 1)
+            sent_headers = mock_session.get.call_args.kwargs.get(
+                "headers"
+            ) or mock_session.get.call_args[1].get("headers")
+            self.assertEqual(sent_headers["Range"], "bytes=5-9")
+            self.assertFalse(os.path.exists(output + ".part.meta"))
+
+    @patch("easyget.downloader.get_file_info")
+    @patch("easyget.downloader.Session")
+    def test_fullsize_part_with_pending_meta_is_not_renamed(
+        self, mock_session_cls, mock_info
+    ):
+        # Regression: a .part preallocated to total_size used to be mistaken
+        # for a finished download on resume and renamed over the output.
+        payload = b"0123456789"
+        mock_info.return_value = (len(payload), True, {})
+        mock_session_cls.return_value = self._range_serving_session(payload)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = f"{tmpdir}/out.bin"
+            with open(output + ".part", "wb") as f:
+                f.truncate(len(payload))  # all holes, nothing written
+            self._write_segment_meta(
+                output + ".part.meta",
+                ranges=[
+                    {"start": 0, "end": 4, "done": False},
+                    {"start": 5, "end": 9, "done": False},
+                ],
+                size=len(payload),
+            )
+
+            info = download_file(
+                "http://example.com/f.bin",
+                output=output,
+                threads=2,
+                resume=True,
+                retries=0,
+                show_progress=False,
+            )
+
+            self.assertFalse(info["skipped"])
+            with open(output, "rb") as f:
+                self.assertEqual(f.read(), payload)
+
+    @patch("easyget.downloader.get_file_info")
+    @patch("easyget.downloader.Session")
+    def test_stale_meta_restarts_segmented_download(self, mock_session_cls, mock_info):
+        # Meta whose recorded size disagrees with the server is discarded and
+        # the whole file is fetched fresh.
+        payload = b"0123456789"
+        mock_info.return_value = (len(payload), True, {})
+        mock_session_cls.return_value = self._range_serving_session(payload)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = f"{tmpdir}/out.bin"
+            with open(output + ".part", "wb") as f:
+                f.truncate(len(payload))
+            self._write_segment_meta(
+                output + ".part.meta",
+                ranges=[{"start": 0, "end": 3, "done": True}],
+                size=4,  # stale: server now reports 10
+            )
+
+            download_file(
+                "http://example.com/f.bin",
+                output=output,
+                threads=2,
+                resume=True,
+                retries=0,
+                show_progress=False,
+            )
+
+            with open(output, "rb") as f:
+                self.assertEqual(f.read(), payload)
+
+    def test_iter_bytes_prefers_readinto_streams(self):
+        class _ReadintoOnly:
+            def __init__(self, data: bytes):
+                self._pos = 0
+                self._data = data
+
+            def readinto(self, buffer):
+                chunk = self._data[self._pos : self._pos + len(buffer)]
+                buffer[: len(chunk)] = chunk
+                self._pos += len(chunk)
+                return len(chunk)
+
+            def close(self):
+                pass
+
+        response = Response(status_code=200, headers={}, url="http://example.com/f.bin")
+        response._stream_response = _ReadintoOnly(b"abcdef")
+
+        self.assertEqual(list(response.iter_bytes(2)), [b"ab", b"cd", b"ef"])
 
     def test_progress_bar_logic(self):
         # Ensure it doesn't crash
