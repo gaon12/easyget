@@ -6,6 +6,51 @@ from collections.abc import Callable, Iterator
 from contextlib import suppress
 
 
+class _DeflateReader:
+    """
+    Incremental reader for Content-Encoding: deflate bodies.
+    Servers send either zlib-wrapped or raw deflate streams; the first
+    decompression attempt retries with raw DEFLATE if zlib framing fails.
+    """
+
+    def __init__(self, raw):
+        self._raw = raw
+        self._decompressor = zlib.decompressobj()
+        self._retried_raw = False
+        self._buffer = bytearray()
+        self._eof = False
+
+    def _fill(self):
+        if self._eof:
+            return
+        chunk = self._raw.read(65536)
+        if not chunk:
+            self._eof = True
+            self._buffer.extend(self._decompressor.flush())
+            return
+        try:
+            self._buffer.extend(self._decompressor.decompress(chunk))
+        except zlib.error:
+            if self._retried_raw:
+                raise
+            self._retried_raw = True
+            self._decompressor = zlib.decompressobj(-zlib.MAX_WBITS)
+            self._buffer.extend(self._decompressor.decompress(chunk))
+
+    def read(self, size: int = -1) -> bytes:
+        if size is None or size < 0:
+            while not self._eof:
+                self._fill()
+            data = bytes(self._buffer)
+            self._buffer.clear()
+            return data
+        while len(self._buffer) < size and not self._eof:
+            self._fill()
+        data = bytes(self._buffer[:size])
+        del self._buffer[:size]
+        return data
+
+
 class Response:
     """
     HTTP Response object similar to requests.Response.
@@ -84,6 +129,20 @@ class Response:
         # aiohttp compatibility alias
         return self.status_code
 
+    def _decoded_stream(self):
+        """
+        Wrap the raw stream in a decompressor when --compressed is active.
+        Keeps download memory bounded for large compressed bodies.
+        """
+        encoding = self.headers.get("Content-Encoding", "").strip().lower()
+        if not self._auto_decompress or not self._stream_response:
+            return self._stream_response
+        if encoding == "gzip":
+            return gzip.GzipFile(fileobj=self._stream_response)
+        if encoding == "deflate":
+            return _DeflateReader(self._stream_response)
+        return self._stream_response
+
     def iter_bytes(self, chunk_size: int = 1024) -> Iterator[bytes]:
         if self._content is not None:
             decoded = self.content
@@ -92,29 +151,19 @@ class Response:
             return
 
         if self._stream_response:
-            if self._auto_decompress and self.headers.get(
-                "Content-Encoding", ""
-            ).strip().lower() in {"gzip", "deflate"}:
-                try:
-                    self._content = self._stream_response.read()
-                finally:
-                    self.close()
-                self._content_decoded = False
-                for idx in range(0, len(self.content), chunk_size):
-                    yield self._content[idx : idx + chunk_size]
-                return
-
-            chunks = []
+            # Streamed bodies are consumed once and never retained in memory,
+            # matching requests' semantics for iter_content(). / 스트림 바디는
+            # 한 번만 소비하며 메모리에 보관하지 않습니다.
+            source = self._decoded_stream()
             try:
                 while True:
-                    chunk = self._stream_response.read(chunk_size)
+                    chunk = source.read(chunk_size)
                     if not chunk:
                         break
-                    chunks.append(chunk)
                     yield chunk
             finally:
-                self._content = b"".join(chunks)
-                self._content_decoded = False
+                self._content = b""
+                self._content_decoded = True
                 self.close()
 
     def close(self):
