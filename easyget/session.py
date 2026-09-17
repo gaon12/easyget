@@ -40,11 +40,17 @@ def _same_origin(url_a: str, url_b: str) -> bool:
     """Compare scheme, host, and effective port of two URLs."""
     a = urllib.parse.urlsplit(url_a)
     b = urllib.parse.urlsplit(url_b)
+    try:
+        port_a = a.port or _DEFAULT_PORTS.get(a.scheme.lower())
+        port_b = b.port or _DEFAULT_PORTS.get(b.scheme.lower())
+    except ValueError:
+        # Unparseable port — treat as different origin so credentials are
+        # stripped rather than leaked.
+        return False
     return (
         a.scheme.lower() == b.scheme.lower()
         and (a.hostname or "").lower() == (b.hostname or "").lower()
-        and (a.port or _DEFAULT_PORTS.get(a.scheme.lower()))
-        == (b.port or _DEFAULT_PORTS.get(b.scheme.lower()))
+        and port_a == port_b
     )
 
 
@@ -463,8 +469,14 @@ class Session:
             )
             if read_timeout is not None:
                 self._apply_read_timeout(resp, read_timeout)
+            # Response.url should reflect the final URL after redirects —
+            # resp.url is a str on real transports; the isinstance guard keeps
+            # mock-based callers working.
+            final_url = getattr(resp, "url", None)
             response = Response(
-                status_code=resp.status, headers=dict(resp.headers), url=url
+                status_code=resp.status,
+                headers=dict(resp.headers),
+                url=final_url if isinstance(final_url, str) and final_url else url,
             )
             response.set_auto_decompress(compressed)
 
@@ -501,7 +513,12 @@ class Session:
             # Even on error, we might want the response object
             if read_timeout is not None:
                 self._apply_read_timeout(e, read_timeout)
-            response = Response(status_code=e.code, headers=dict(e.headers), url=url)
+            error_url = getattr(e, "url", None)
+            response = Response(
+                status_code=e.code,
+                headers=dict(e.headers),
+                url=error_url if isinstance(error_url, str) and error_url else url,
+            )
             response.set_auto_decompress(compressed)
             if stream:
                 response._stream_response = e
