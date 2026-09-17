@@ -1,4 +1,5 @@
 import gzip
+import http.client
 import json
 import re
 import zlib
@@ -17,6 +18,7 @@ class _DeflateReader:
         self._raw = raw
         self._decompressor = zlib.decompressobj()
         self._retried_raw = False
+        self._seen_data = False
         self._buffer = bytearray()
         self._eof = False
 
@@ -30,12 +32,17 @@ class _DeflateReader:
             return
         try:
             self._buffer.extend(self._decompressor.decompress(chunk))
+            self._seen_data = True
         except zlib.error:
-            if self._retried_raw:
+            # Raw-DEFLATE fallback is only valid before any bytes were
+            # consumed; retrying mid-stream would feed garbage offsets into
+            # a fresh decompressor and silently corrupt the output.
+            if self._retried_raw or self._seen_data:
                 raise
             self._retried_raw = True
             self._decompressor = zlib.decompressobj(-zlib.MAX_WBITS)
             self._buffer.extend(self._decompressor.decompress(chunk))
+            self._seen_data = True
 
     def read(self, size: int = -1) -> bytes:
         if size is None or size < 0:
@@ -161,6 +168,17 @@ class Response:
                     if not chunk:
                         break
                     yield chunk
+            except (OSError, http.client.HTTPException) as e:
+                # Transport errors mid-body (connection reset, truncated
+                # body, timeout) are surfaced as RequestError so callers can
+                # classify them as retryable — same as request-time failures.
+                from .exceptions import RequestError
+
+                raise RequestError(
+                    f"Connection lost while reading response body: {e}",
+                    hint="The transfer was interrupted; retry or resume.",
+                    context={"url": self.url},
+                ) from e
             finally:
                 self._content = b""
                 self._content_decoded = True
