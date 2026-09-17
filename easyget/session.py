@@ -12,6 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 from . import __version__
+from .exceptions import RequestError
 from .models import Response
 
 TimeoutType = int | float | tuple[float | None, float | None] | None
@@ -29,6 +30,60 @@ ResponseHookType = (
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
+
+
+_ALLOWED_SCHEMES = frozenset({"http", "https"})
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _same_origin(url_a: str, url_b: str) -> bool:
+    """Compare scheme, host, and effective port of two URLs."""
+    a = urllib.parse.urlsplit(url_a)
+    b = urllib.parse.urlsplit(url_b)
+    return (
+        a.scheme.lower() == b.scheme.lower()
+        and (a.hostname or "").lower() == (b.hostname or "").lower()
+        and (a.port or _DEFAULT_PORTS.get(a.scheme.lower()))
+        == (b.port or _DEFAULT_PORTS.get(b.scheme.lower()))
+    )
+
+
+def _check_url_scheme(url: str) -> None:
+    """easyget only speaks HTTP(S); reject file://, ftp://, etc. outright."""
+    scheme = urllib.parse.urlsplit(url).scheme.lower()
+    if scheme not in _ALLOWED_SCHEMES:
+        raise RequestError(
+            f"Unsupported URL scheme: {scheme or '(missing)'}",
+            hint="Only http:// and https:// URLs are supported.",
+            context={"url": url},
+            retryable=False,
+        )
+
+
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """
+    Hardened redirect handling:
+    - refuses redirects to non-HTTP(S) schemes (e.g. file:// local file reads)
+    - drops Authorization/Cookie headers when the redirect crosses origins,
+      matching requests' credential-stripping behavior
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new_req = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new_req is None:
+            return None
+        new_scheme = urllib.parse.urlsplit(new_req.full_url).scheme.lower()
+        if new_scheme not in _ALLOWED_SCHEMES:
+            raise RequestError(
+                f"Refused redirect to unsupported scheme: {new_scheme or 'unknown'}",
+                hint="easyget only follows http/https redirects.",
+                context={"url": new_req.full_url},
+                retryable=False,
+            )
+        if not _same_origin(req.full_url, new_req.full_url):
+            new_req.remove_header("Authorization")
+            new_req.remove_header("Cookie")
+        return new_req
 
 
 class Session:
@@ -125,7 +180,9 @@ class Session:
         if context is not None:
             handlers.append(urllib.request.HTTPSHandler(context=context))
 
-        if not allow_redirects:
+        if allow_redirects:
+            handlers.append(_SafeRedirectHandler())
+        else:
             handlers.append(_NoRedirectHandler())
 
         return urllib.request.build_opener(*handlers)
@@ -234,10 +291,14 @@ class Session:
         boundary = f"easyget-{uuid4().hex}"
         lines: list[bytes] = []
 
+        def _header_safe(value: str) -> str:
+            # Strip characters that could break or inject MIME headers.
+            return "".join(c for c in str(value) if c not in '"\r\n')
+
         for key, value in cls._normalize_form_items(data):
             lines.append(f"--{boundary}\r\n".encode())
             lines.append(
-                f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode()
+                f'Content-Disposition: form-data; name="{_header_safe(key)}"\r\n\r\n'.encode()
             )
             lines.append(value.encode("utf-8"))
             lines.append(b"\r\n")
@@ -265,11 +326,11 @@ class Session:
                     content_type = guessed
 
             payload = cls._read_file_payload(file_value)
-            safe_name = str(filename).replace('"', "")
+            safe_name = _header_safe(filename)
 
             lines.append(f"--{boundary}\r\n".encode())
             lines.append(
-                f'Content-Disposition: form-data; name="{field_name}"; filename="{safe_name}"\r\n'.encode()
+                f'Content-Disposition: form-data; name="{_header_safe(field_name)}"; filename="{safe_name}"\r\n'.encode()
             )
             lines.append(f"Content-Type: {content_type}\r\n\r\n".encode())
             lines.append(payload)
@@ -357,6 +418,7 @@ class Session:
         hooks: ResponseHookType | None = None,
     ) -> Response:
         method = method.upper()
+        _check_url_scheme(url)
         url = self._build_url(url, params=params)
 
         req_headers = self.headers.copy()
@@ -448,8 +510,6 @@ class Session:
                 },
             )
         except urllib.error.URLError as e:
-            from .exceptions import RequestError
-
             raise RequestError(
                 f"Request failed: {e}",
                 hint="Check network connectivity, DNS, proxy, and TLS settings.",

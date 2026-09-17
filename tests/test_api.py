@@ -5,6 +5,7 @@ import json
 import ssl
 import unittest
 import urllib.error
+import urllib.request
 from unittest.mock import MagicMock, patch
 from urllib.parse import parse_qs, urlsplit
 
@@ -532,6 +533,48 @@ class TestAPI(unittest.TestCase):
         payload = ctx.exception.to_dict()
         self.assertEqual(payload["code"], "REQUEST_ERROR")
         self.assertTrue(payload["retryable"])
+
+    def test_unsupported_url_scheme_rejected(self):
+        s = easyget.Session()
+        with self.assertRaises(easyget.RequestError) as ctx:
+            s.get("file:///etc/passwd")
+        self.assertFalse(ctx.exception.retryable)
+
+    def test_redirect_strips_credentials_cross_origin(self):
+        from easyget.session import _SafeRedirectHandler
+
+        handler = _SafeRedirectHandler()
+        req = urllib.request.Request("https://a.example/file")
+        req.add_header("Authorization", "Basic dXNlcjpwYXNz")
+        req.add_header("Cookie", "s=secret")
+
+        new_req = handler.redirect_request(
+            req, None, 302, "Found", {}, "https://b.example/file"
+        )
+        self.assertFalse(new_req.has_header("Authorization"))
+        self.assertFalse(new_req.has_header("Cookie"))
+
+    def test_redirect_keeps_credentials_same_origin(self):
+        from easyget.session import _SafeRedirectHandler
+
+        handler = _SafeRedirectHandler()
+        req = urllib.request.Request("https://a.example/file")
+        req.add_header("Authorization", "Basic dXNlcjpwYXNz")
+
+        new_req = handler.redirect_request(
+            req, None, 302, "Found", {}, "https://a.example/other"
+        )
+        self.assertTrue(new_req.has_header("Authorization"))
+
+    def test_redirect_to_file_scheme_refused(self):
+        from easyget.session import _SafeRedirectHandler
+
+        handler = _SafeRedirectHandler()
+        req = urllib.request.Request("https://a.example/file")
+
+        with self.assertRaises(easyget.RequestError) as ctx:
+            handler.redirect_request(req, None, 302, "Found", {}, "file:///etc/passwd")
+        self.assertFalse(ctx.exception.retryable)
 
     def test_error_payload_compact_mode(self):
         err = easyget.RequestError(
