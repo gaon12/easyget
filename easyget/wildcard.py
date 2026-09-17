@@ -1,6 +1,6 @@
 import fnmatch
 import logging
-import os
+import posixpath
 import re
 from urllib.parse import urljoin, urlparse
 
@@ -16,8 +16,9 @@ def expand_wildcard_url(url: str, headers: dict) -> list[tuple[str, str]]:
     Supports basic HTML index pages.
     """
     parsed = urlparse(url)
-    base_path = os.path.dirname(parsed.path)
-    pattern = os.path.basename(parsed.path)
+    # URL paths always use '/', so use posixpath (os.path is '\' on Windows).
+    base_path = posixpath.dirname(parsed.path)
+    pattern = posixpath.basename(parsed.path)
     base_url = f"{parsed.scheme}://{parsed.netloc}{base_path}/"
 
     session = Session()
@@ -39,12 +40,12 @@ def expand_wildcard_url(url: str, headers: dict) -> list[tuple[str, str]]:
         for link in links:
             # Clean up the link (ignore fragments/params for matching)
             link_path = urlparse(link).path
-            link_name = os.path.basename(link_path)
+            link_name = posixpath.basename(link_path)
 
             if fnmatch.fnmatch(link_name, pattern):
                 full_url = urljoin(base_url, link)
                 if full_url not in seen_urls:
-                    filename = os.path.basename(
+                    filename = posixpath.basename(
                         urlparse(full_url).path
                     ) or get_filename_from_url(full_url)
                     matched_links.append((full_url, filename))
