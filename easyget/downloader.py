@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC
 
 from .exceptions import DownloadError, EasyGetError, IntegrityError
-from .session import Session
+from .session import Session, TimeoutType
 from .utils import (
     ProgressBar,
     SpeedLimiter,
@@ -61,7 +61,10 @@ def _compute_retry_delay(
 
 
 def get_file_info(
-    url: str, headers: dict[str, str], session: Session | None = None
+    url: str,
+    headers: dict[str, str],
+    session: Session | None = None,
+    timeout: TimeoutType = 30,
 ) -> tuple[int | None, bool, dict[str, str]]:
     """
     Retrieve file size and check if Range requests are supported using HEAD and GET probe.
@@ -77,7 +80,7 @@ def get_file_info(
     try:
         # Step 1: Try HEAD request
         try:
-            response = session.head(url, headers=headers)
+            response = session.head(url, headers=headers, timeout=timeout)
             if response.status_code == 200:
                 size_raw = response.headers.get("Content-Length")
                 if size_raw:
@@ -99,22 +102,29 @@ def get_file_info(
             try:
                 probe_headers = headers.copy()
                 probe_headers["Range"] = "bytes=0-0"
-                response = session.get(url, headers=probe_headers)
-                if response.status_code == 206:
-                    range_supported = True
-                    if size is None:
-                        cr = response.headers.get("Content-Range")
-                        if cr and "/" in cr:
-                            size_raw = cr.split("/")[-1]
-                            if size_raw.isdigit():
-                                size = int(size_raw)
+                # stream=True: a server that ignores Range would otherwise
+                # buffer the entire body in memory just for this probe.
+                response = session.get(
+                    url, headers=probe_headers, stream=True, timeout=timeout
+                )
+                try:
+                    if response.status_code == 206:
+                        range_supported = True
+                        if size is None:
+                            cr = response.headers.get("Content-Range")
+                            if cr and "/" in cr:
+                                size_raw = cr.split("/")[-1]
+                                if size_raw.isdigit():
+                                    size = int(size_raw)
 
-                    # Also capture headers from GET response if not present
-                    for h in ["ETag", "Last-Modified", "Content-Disposition"]:
-                        if h not in info_headers:
-                            val = response.headers.get(h)
-                            if val:
-                                info_headers[h] = val
+                        # Also capture headers from GET response if not present
+                        for h in ["ETag", "Last-Modified", "Content-Disposition"]:
+                            if h not in info_headers:
+                                val = response.headers.get(h)
+                                if val:
+                                    info_headers[h] = val
+                finally:
+                    response.close()
             except Exception as e:
                 logger.debug(f"Range probe failed for {url}: {e}")
     finally:
@@ -134,6 +144,7 @@ def download_range(
     limiter: SpeedLimiter | None,
     error_event: threading.Event,
     session: Session | None = None,
+    timeout: TimeoutType = 30,
 ) -> None:
     """
     Download a specific byte range of a file. Used for multi-threaded downloads.
@@ -144,7 +155,7 @@ def download_range(
     req_headers["Range"] = f"bytes={start}-{end}"
 
     try:
-        response = session.get(url, headers=req_headers, stream=True)
+        response = session.get(url, headers=req_headers, stream=True, timeout=timeout)
         if response.status_code != 206:
             raise IntegrityError(
                 f"Server at {url} does not support Range requests (Status: {response.status_code})."
@@ -187,6 +198,7 @@ def download_file(
     retry_backoff: str = "exponential",
     retry_max_delay: float = 30.0,
     timestamping: bool = False,
+    timeout: TimeoutType = 30,
 ) -> dict[str, object]:
     """
     Main orchestrator for downloading a single file with retries and integrity checks.
@@ -217,7 +229,7 @@ def download_file(
                 if should_probe:
                     # Get file info (size, range support, ETag, etc.)
                     total_size, range_supported, info_headers = get_file_info(
-                        url, request_headers, session=session
+                        url, request_headers, session=session, timeout=timeout
                     )
                     if not output_was_provided:
                         resolved_output = get_filename_from_headers(info_headers, url)
@@ -227,16 +239,8 @@ def download_file(
                 if out_dir and not os.path.exists(out_dir):
                     os.makedirs(out_dir, exist_ok=True)
 
-                # Skip/overwrite policy must be handled before any network download.
-                if not should_download_output(
-                    resolved_output, force=force, skip_existing=skip_existing
-                ):
-                    return {
-                        "output": resolved_output,
-                        "bytes": 0,
-                        "skipped": True,
-                    }
-
+                # Timestamping runs before the overwrite prompt: wget -N
+                # semantics skip up-to-date files without asking anything.
                 if timestamping and os.path.exists(resolved_output):
                     remote_modified_raw = info_headers.get("Last-Modified")
                     remote_modified = (
@@ -255,6 +259,16 @@ def download_file(
                                 "bytes": 0,
                                 "skipped": True,
                             }
+
+                # Skip/overwrite policy must be handled before any network download.
+                if not should_download_output(
+                    resolved_output, force=force, skip_existing=skip_existing
+                ):
+                    return {
+                        "output": resolved_output,
+                        "bytes": 0,
+                        "skipped": True,
+                    }
 
                 tmp_path = resolved_output + ".part"
                 if ignore_cache and os.path.exists(tmp_path):
@@ -312,7 +326,9 @@ def download_file(
                     pbar.update(downloaded_size)
 
                 if attempt_threads == 1:
-                    response = session.get(url, headers=request_headers, stream=True)
+                    response = session.get(
+                        url, headers=request_headers, stream=True, timeout=timeout
+                    )
                     if 300 <= response.status_code < 400:
                         raise IntegrityError(
                             f"Unexpected redirect response {response.status_code} for {url}."
@@ -365,6 +381,7 @@ def download_file(
                                 limiter,
                                 error_event,
                                 session,
+                                timeout,
                             )
                             for start, end in range_list
                         ]
