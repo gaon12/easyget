@@ -288,7 +288,7 @@ def parse_args():
         "--timeout",
         type=_positive_float,
         default=30.0,
-        help="HTTP timeout (seconds) for request mode",
+        help="HTTP timeout in seconds (default: 30)",
     )
 
     return parser.parse_args()
@@ -433,6 +433,7 @@ def _download_kwargs(
         "retry_backoff": args.retry_backoff,
         "retry_max_delay": args.retry_max_delay,
         "timestamping": args.timestamping,
+        "timeout": args.timeout,
     }
 
 
@@ -465,6 +466,10 @@ def run_request_mode(args: argparse.Namespace, headers: dict[str, str]) -> int:
 
     json_payload = None
     if args.json_data is not None:
+        if args.request_data is not None or args.data_urlencode:
+            raise ValueError(
+                "--json-data cannot be combined with --data/--data-urlencode"
+            )
         try:
             json_payload = json.loads(args.json_data)
         except json.JSONDecodeError as e:
@@ -731,12 +736,14 @@ def main():
             if args.json:
                 payload = _render_results_payload("download", results, ai_mode=args.ai)
                 _print_payload(payload, ai_mode=args.ai)
-                if success_count != len(file_list):
-                    sys.exit(EXIT_PARTIAL)
             elif not args.quiet:
                 logger.info(
                     f"Batch download complete: {success_count}/{len(file_list)} files successful."
                 )
+            if success_count != len(file_list):
+                # Partial failures must surface in the exit code in every
+                # output mode — scripts relying on $? shouldn't need --json.
+                sys.exit(EXIT_PARTIAL)
         else:
             url, output = file_list[0]
             if args.output_dir:
