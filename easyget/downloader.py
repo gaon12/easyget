@@ -313,6 +313,10 @@ def download_file(
 
                 if attempt_threads == 1:
                     response = session.get(url, headers=request_headers, stream=True)
+                    if 300 <= response.status_code < 400:
+                        raise IntegrityError(
+                            f"Unexpected redirect response {response.status_code} for {url}."
+                        )
                     if resume and downloaded_size > 0 and response.status_code != 206:
                         raise IntegrityError(
                             f"Server does not support resume for {url} (Status: {response.status_code})."
