@@ -1,5 +1,6 @@
 import asyncio
-from typing import Any, Awaitable, Callable, List, Optional
+from collections.abc import Awaitable, Callable
+from contextlib import suppress
 
 from .models import Response
 from .session import Session
@@ -15,7 +16,7 @@ def _next_chunk(iterator):
 class AsyncResponse:
     def __init__(self, response: Response):
         self._response = response
-        self._aclose_callbacks: List[Callable[[], Awaitable[None]]] = []
+        self._aclose_callbacks: list[Callable[[], Awaitable[None]]] = []
 
     @property
     def status(self) -> int:
@@ -69,10 +70,8 @@ class AsyncResponse:
         callbacks = self._aclose_callbacks[:]
         self._aclose_callbacks.clear()
         for callback in callbacks:
-            try:
+            with suppress(Exception):
                 await callback()
-            except Exception:
-                pass
 
     async def release(self):
         await self.aclose()
@@ -88,7 +87,7 @@ class AsyncResponse:
 class AsyncRequestContextManager:
     def __init__(self, coro: Awaitable[AsyncResponse]):
         self._coro = coro
-        self._response: Optional[AsyncResponse] = None
+        self._response: AsyncResponse | None = None
 
     def __await__(self):
         return self._coro.__await__()
@@ -107,13 +106,15 @@ class AsyncRequestContextManager:
 class AsyncSession:
     def __init__(
         self,
-        session: Optional[Session] = None,
-        max_concurrency: Optional[int] = None,
+        session: Session | None = None,
+        max_concurrency: int | None = None,
     ):
         if max_concurrency is not None and max_concurrency < 1:
             raise ValueError("max_concurrency must be >= 1")
         self._session = session or Session()
-        self._semaphore = asyncio.Semaphore(max_concurrency) if max_concurrency else None
+        self._semaphore = (
+            asyncio.Semaphore(max_concurrency) if max_concurrency else None
+        )
         self.headers = self._session.headers
         self._closed = False
 
@@ -126,7 +127,9 @@ class AsyncSession:
             raise RuntimeError("AsyncSession is closed")
         if self._semaphore is not None:
             async with self._semaphore:
-                return await asyncio.to_thread(self._session.request, method, url, **kwargs)
+                return await asyncio.to_thread(
+                    self._session.request, method, url, **kwargs
+                )
         return await asyncio.to_thread(self._session.request, method, url, **kwargs)
 
     async def _request(self, method: str, url: str, **kwargs) -> AsyncResponse:

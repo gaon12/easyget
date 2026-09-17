@@ -1,22 +1,25 @@
-import json
 import gzip
+import json
 import re
 import zlib
-from typing import Callable, Dict, Iterator, List, Optional
+from collections.abc import Callable, Iterator
+from contextlib import suppress
+
 
 class Response:
     """
     HTTP Response object similar to requests.Response.
     """
-    def __init__(self, status_code: int, headers: Dict[str, str], url: str):
+
+    def __init__(self, status_code: int, headers: dict[str, str], url: str):
         self.status_code = int(status_code)
         self.headers = headers
         self.url = url
-        self._content: Optional[bytes] = None
-        self._text: Optional[str] = None
-        self._stream_response = None # Placeholder for the raw response object
+        self._content: bytes | None = None
+        self._text: str | None = None
+        self._stream_response = None  # Placeholder for the raw response object
         self._closed = False
-        self._close_callbacks: List[Callable[[], None]] = []
+        self._close_callbacks: list[Callable[[], None]] = []
         self._auto_decompress = False
         self._content_decoded = False
 
@@ -85,18 +88,20 @@ class Response:
         if self._content is not None:
             decoded = self.content
             for idx in range(0, len(decoded), chunk_size):
-                yield decoded[idx:idx + chunk_size]
+                yield decoded[idx : idx + chunk_size]
             return
 
         if self._stream_response:
-            if self._auto_decompress and self.headers.get("Content-Encoding", "").strip().lower() in {"gzip", "deflate"}:
+            if self._auto_decompress and self.headers.get(
+                "Content-Encoding", ""
+            ).strip().lower() in {"gzip", "deflate"}:
                 try:
                     self._content = self._stream_response.read()
                 finally:
                     self.close()
                 self._content_decoded = False
                 for idx in range(0, len(self.content), chunk_size):
-                    yield self._content[idx:idx + chunk_size]
+                    yield self._content[idx : idx + chunk_size]
                 return
 
             chunks = []
@@ -126,11 +131,9 @@ class Response:
         callbacks = self._close_callbacks[:]
         self._close_callbacks.clear()
         for callback in callbacks:
-            try:
+            # Close path must be best-effort and never mask caller errors.
+            with suppress(Exception):
                 callback()
-            except Exception:
-                # Close path must be best-effort and never mask caller errors.
-                pass
 
     def add_close_callback(self, callback: Callable[[], None]):
         self._close_callbacks.append(callback)
@@ -146,14 +149,18 @@ class Response:
         include_body: bool = False,
         max_body_chars: int = 512,
         compact: bool = False,
-    ) -> Dict[str, object]:
+    ) -> dict[str, object]:
         """
         Serialize response metadata for logs, automation, or LLM-friendly traces.
         """
         if compact:
-            payload: Dict[str, object] = {"st": self.status_code, "ok": 1 if self.ok else 0, "u": self.url}
+            payload: dict[str, object] = {
+                "st": self.status_code,
+                "ok": 1 if self.ok else 0,
+                "u": self.url,
+            }
             if include_body:
-                payload["b"] = self.text[:max(0, int(max_body_chars))]
+                payload["b"] = self.text[: max(0, int(max_body_chars))]
             return payload
 
         payload = {
@@ -163,7 +170,7 @@ class Response:
             "headers": self.headers,
         }
         if include_body:
-            payload["body_preview"] = self.text[:max(0, int(max_body_chars))]
+            payload["body_preview"] = self.text[: max(0, int(max_body_chars))]
         return payload
 
     @property
@@ -173,6 +180,7 @@ class Response:
     def raise_for_status(self):
         if 400 <= self.status_code < 600:
             from .exceptions import HTTPStatusError
+
             raise HTTPStatusError(
                 f"HTTP Error: {self.status_code} for url: {self.url}",
                 context={"status_code": self.status_code, "url": self.url},

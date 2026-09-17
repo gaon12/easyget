@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any
 
 from .exceptions import EasyGetError
 
 
-def error_payload(exc: Exception, *, compact: bool = False) -> Dict[str, Any]:
+def error_payload(exc: Exception, *, compact: bool = False) -> dict[str, Any]:
     """
     Convert exceptions into stable, machine-readable payloads.
     Compact mode is tuned for low-token AI pipelines.

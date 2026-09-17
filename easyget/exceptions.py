@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any
 
 
 @dataclass
@@ -9,15 +9,16 @@ class ErrorDetails:
     """
     Structured diagnostic payload designed for both humans and LLM agents.
     """
+
     code: str
     message: str
-    hint: Optional[str] = None
-    context: Optional[Dict[str, Any]] = None
+    hint: str | None = None
+    context: dict[str, Any] | None = None
     retryable: bool = False
 
-    def to_dict(self, compact: bool = False) -> Dict[str, Any]:
+    def to_dict(self, compact: bool = False) -> dict[str, Any]:
         if compact:
-            payload: Dict[str, Any] = {"c": self.code, "m": self.message}
+            payload: dict[str, Any] = {"c": self.code, "m": self.message}
             if self.hint:
                 payload["h"] = self.hint
             if self.context:
@@ -44,8 +45,8 @@ class EasyGetError(Exception):
         message: str,
         *,
         code: str = "EASYGET_ERROR",
-        hint: Optional[str] = None,
-        context: Optional[Dict[str, Any]] = None,
+        hint: str | None = None,
+        context: dict[str, Any] | None = None,
         retryable: bool = False,
     ):
         super().__init__(message)
@@ -62,18 +63,18 @@ class EasyGetError(Exception):
         return self.details.code
 
     @property
-    def hint(self) -> Optional[str]:
+    def hint(self) -> str | None:
         return self.details.hint
 
     @property
-    def context(self) -> Dict[str, Any]:
+    def context(self) -> dict[str, Any]:
         return self.details.context or {}
 
     @property
     def retryable(self) -> bool:
         return self.details.retryable
 
-    def to_dict(self, compact: bool = False) -> Dict[str, Any]:
+    def to_dict(self, compact: bool = False) -> dict[str, Any]:
         return self.details.to_dict(compact=compact)
 
     def __str__(self) -> str:
@@ -114,4 +115,3 @@ class HTTPStatusError(DownloadError):
         kwargs.setdefault("code", "HTTP_STATUS_ERROR")
         kwargs.setdefault("retryable", False)
         super().__init__(message, **kwargs)
-
