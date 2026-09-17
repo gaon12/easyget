@@ -7,7 +7,8 @@ import unittest
 from unittest.mock import MagicMock, mock_open, patch
 
 from easyget.downloader import _compute_retry_delay, download_file, download_range
-from easyget.exceptions import DownloadError, IntegrityError
+from easyget.exceptions import DownloadError, IntegrityError, RequestError
+from easyget.input_parser import parse_file_list
 from easyget.models import Response
 from easyget.utils import (
     _CONFIRMED_OVERWRITES,
@@ -118,6 +119,173 @@ class TestEasyGet(unittest.TestCase):
         self.assertEqual(
             get_filename_from_headers(headers, "http://example.com/x"), "report.zip"
         )
+
+    def test_filename_from_headers_strips_windows_forbidden_chars(self):
+        # ':' would create an NTFS alternate data stream on Windows.
+        headers = {"Content-Disposition": 'attachment; filename="a:b.txt"'}
+        self.assertEqual(
+            get_filename_from_headers(headers, "http://example.com/x"),
+            "ab.txt",
+        )
+        headers = {"Content-Disposition": 'attachment; filename="x<y>z|q?.txt"'}
+        self.assertEqual(
+            get_filename_from_headers(headers, "http://example.com/x"),
+            "xyzq.txt",
+        )
+
+    def test_filename_from_headers_rfc5987_with_language_tag(self):
+        headers = {
+            "Content-Disposition": (
+                "attachment; filename*=UTF-8'en'%ED%95%9C%EA%B8%80.zip"
+            )
+        }
+        self.assertEqual(
+            get_filename_from_headers(headers, "http://example.com/x"),
+            "한글.zip",
+        )
+
+    def test_filename_from_url_percent_decodes(self):
+        self.assertEqual(
+            get_filename_from_url("http://example.com/%ED%95%9C%EA%B8%80.zip"),
+            "한글.zip",
+        )
+        # Encoded separators cannot smuggle a path through the decode.
+        self.assertEqual(
+            get_filename_from_url("http://example.com/dir/%2e%2e%2fpasswd"),
+            "passwd",
+        )
+
+    def test_parse_file_list_sanitizes_csv_filename(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = os.path.join(tmpdir, "list.csv")
+            with open(csv_path, "w", encoding="utf-8", newline="") as f:
+                f.write("url,filename\n")
+                f.write("http://example.com/a.zip,../../evil.exe\n")
+                f.write("http://example.com/b.zip,normal.zip\n")
+
+            entries = parse_file_list(csv_path)
+
+        self.assertEqual(
+            entries,
+            [
+                ("http://example.com/a.zip", "evil.exe"),
+                ("http://example.com/b.zip", "normal.zip"),
+            ],
+        )
+
+    def test_iter_bytes_wraps_transport_errors_as_request_error(self):
+        class _Boom:
+            def read(self, size=-1):
+                raise ConnectionResetError("connection reset")
+
+            def close(self):
+                pass
+
+        response = Response(
+            status_code=200, headers={}, url="http://example.com/file.txt"
+        )
+        response._stream_response = _Boom()
+
+        with self.assertRaises(RequestError) as ctx:
+            list(response.iter_bytes(1024))
+        self.assertTrue(ctx.exception.retryable)
+
+    @patch("easyget.downloader.Session")
+    @patch("time.sleep")
+    def test_download_retries_mid_body_connection_reset(
+        self, mock_sleep, mock_session_cls
+    ):
+        class _Boom:
+            def read(self, size=-1):
+                raise ConnectionResetError("connection reset")
+
+            def close(self):
+                pass
+
+        def _fresh_response(*_args, **_kwargs):
+            # Each attempt needs an unconsumed stream — a real retry would
+            # get a brand-new response object.
+            resp = Response(
+                status_code=200, headers={}, url="http://example.com/file.txt"
+            )
+            resp._stream_response = _Boom()
+            return resp
+
+        mock_session = MagicMock()
+        mock_session.get.side_effect = _fresh_response
+        mock_session_cls.return_value = mock_session
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = f"{tmpdir}/out.txt"
+            with self.assertRaises(DownloadError):
+                download_file(
+                    "http://example.com/file.txt",
+                    output=output,
+                    retries=2,
+                    show_progress=False,
+                )
+
+        # 1 initial attempt + 2 retries — mid-body resets are transient.
+        self.assertEqual(mock_session.get.call_count, 3)
+
+    @patch("easyget.downloader.Session")
+    def test_download_file_forwards_timeout(self, mock_session_cls):
+        response = Response(
+            status_code=200, headers={}, url="http://example.com/file.txt"
+        )
+        response._stream_response = io.BytesIO(b"abc")
+        mock_session = MagicMock()
+        mock_session.get.return_value = response
+        mock_session_cls.return_value = mock_session
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = f"{tmpdir}/saved.txt"
+            download_file(
+                "http://example.com/file.txt",
+                output=output,
+                retries=0,
+                show_progress=False,
+                timeout=7.5,
+            )
+
+        self.assertEqual(mock_session.get.call_args.kwargs["timeout"], 7.5)
+
+    @patch("easyget.downloader.Session")
+    @patch("easyget.downloader.get_file_info")
+    def test_timestamping_downloads_when_remote_is_newer(
+        self, mock_get_file_info, mock_session_cls
+    ):
+        mock_get_file_info.return_value = (
+            100,
+            True,
+            {"Last-Modified": "Wed, 21 Oct 2099 07:28:00 GMT"},
+        )
+        response = Response(
+            status_code=200, headers={}, url="http://example.com/file.txt"
+        )
+        response._stream_response = io.BytesIO(b"fresh")
+        mock_session = MagicMock()
+        mock_session.get.return_value = response
+        mock_session_cls.return_value = mock_session
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = f"{tmpdir}/stale.txt"
+            with open(output, "wb") as f:
+                f.write(b"old")
+            os.utime(output, (1000000000, 1000000000))
+
+            info = download_file(
+                "http://example.com/file.txt",
+                output=output,
+                timestamping=True,
+                force=True,
+                retries=0,
+                show_progress=False,
+            )
+
+            self.assertFalse(info["skipped"])
+            with open(output, "rb") as f:
+                self.assertEqual(f.read(), b"fresh")
 
     def test_filename_from_headers_rejects_reserved_and_control_names(self):
         headers = {"Content-Disposition": 'attachment; filename="CON"'}

@@ -12,11 +12,12 @@ from urllib.parse import parse_qs, urlsplit
 import easyget
 
 
-def make_http_response(status=200, headers=None, body=b"ok"):
+def make_http_response(status=200, headers=None, body=b"ok", url=None):
     response = MagicMock()
     response.status = status
     response.headers = headers or {}
     response.read.return_value = body
+    response.url = url  # str -> treated as the final post-redirect URL
     response.__enter__.return_value = response
     response.__exit__.return_value = False
     return response
@@ -44,6 +45,38 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(resp.text, "Hello World")
         self.assertEqual(resp.headers["Content-Type"], "text/plain")
         self.assertTrue(resp.ok)
+
+    def test_response_url_uses_final_url_after_redirect(self):
+        response = make_http_response(
+            status=200, body=b"ok", url="http://cdn.example.com/final.bin"
+        )
+        opener = MagicMock()
+        opener.open.return_value = response
+        opener_no_redirect = MagicMock()
+        opener_no_redirect.open.return_value = response
+
+        with patch(
+            "easyget.session.urllib.request.build_opener",
+            side_effect=[opener, opener_no_redirect],
+        ):
+            resp = easyget.get("http://example.com/redirect")
+
+        self.assertEqual(resp.url, "http://cdn.example.com/final.bin")
+
+    def test_response_url_falls_back_to_request_url(self):
+        response = make_http_response(status=200, body=b"ok", url=None)
+        opener = MagicMock()
+        opener.open.return_value = response
+        opener_no_redirect = MagicMock()
+        opener_no_redirect.open.return_value = response
+
+        with patch(
+            "easyget.session.urllib.request.build_opener",
+            side_effect=[opener, opener_no_redirect],
+        ):
+            resp = easyget.get("http://example.com/plain")
+
+        self.assertEqual(resp.url, "http://example.com/plain")
 
     def test_response_json(self):
         response = make_http_response(status=200, body=b'{"key": "value"}')
