@@ -22,12 +22,12 @@ It supports modern features like multithreading, speed limits, resume support, w
 - ✅ **Progress bars** (total file count and individual download progress)
 - ✅ **Ignore cache** (`--no-cache`, ignore `.part` files)
 - ✅ **Basic auth / Bearer token support**
-- ✅ **Python HTTP client API (sync + async)** for `requests`/`aiohttp`-style migration
+- ✅ **Python HTTP client API (sync + async)** for `requests`/`aiohttp`-style migration (the async API offloads the shared sync engine onto worker threads — still zero-dependency)
 - ✅ **AI-optimized structured outputs** (`--ai`) and structured diagnostics for automation/agents
 - ✅ **Download modes** (`--mode fast` or `accurate`)
   - `fast` (default): minimizes metadata probes and downloads immediately in common single-file cases
   - `accurate`: probes metadata (HEAD/Range) to improve size/range detection and multithread decisions
-- ✅ **English/Korean comments and error messages**
+- ✅ **English/Korean comments and docs**
 
 - ✅ **wget/curl 스타일 옵션 지원** (`-O`, `-c`, `--limit-rate`)
 - ✅ **멀티스레드 다운로드** (기본 4개 스레드)
@@ -38,12 +38,12 @@ It supports modern features like multithreading, speed limits, resume support, w
 - ✅ **진행률 표시** (총 파일 수 및 개별 파일 다운로드)
 - ✅ **캐시 무시 기능** (`--no-cache`, `.part` 파일 무시)
 - ✅ **기본 인증 / Bearer 토큰 지원**
-- ✅ **Python HTTP 클라이언트 API (동기 + 비동기)** (`requests`/`aiohttp` 마이그레이션 용도)
+- ✅ **Python HTTP 클라이언트 API (동기 + 비동기)** (`requests`/`aiohttp` 마이그레이션 용도. 비동기 API는 동기 엔진을 워커 스레드로 오프로드하며 무의존성 유지)
 - ✅ **AI 최적화 구조화 출력** (`--ai`) 및 구조화 진단 정보
 - ✅ **다운로드 모드** (`--mode fast` 또는 `accurate`)
   - `fast` (기본값): 일반적인 단일 파일 다운로드에서 메타데이터 조회를 최소화하고 즉시 다운로드
   - `accurate`: HEAD/Range 기반 메타데이터를 조회해 크기/Range/멀티스레드 판단 정확도를 높임
-- ✅ **영어/한글 주석 및 에러 메시지**
+- ✅ **영어/한글 주석 및 문서**
 
 ---
 
@@ -220,7 +220,7 @@ https://example.com/file2.zip
 
 ## Notes / 주의사항
 
-- When a download is interrupted, a `.part` file is created.
+- When a download is interrupted, a `.part` file is created. Multithreaded downloads also keep a `.part.meta` sidecar tracking completed byte ranges, so `-c` resumes only the missing segments instead of restarting — and a half-written `.part` can never be mistaken for a finished file.
 - Use `--no-cache` to ignore existing `.part` files and redownload.
 - Wildcard URLs are based on `href="..."` format in HTML directory listings.
 - Downloads always follow redirects; `-L` only controls redirect handling in request mode.
@@ -228,7 +228,7 @@ https://example.com/file2.zip
 - URLs without a filename (e.g., `https://host/dir/`) are saved as `index.html`, matching wget.
 - Server-provided filenames are sanitized to a safe basename.
 
-- 다운로드가 중단되면 `.part` 파일이 생성됩니다.
+- 다운로드가 중단되면 `.part` 파일이 생성됩니다. 멀티스레드 다운로드는 완료된 바이트 범위를 기록하는 `.part.meta` 파일도 함께 유지하므로, `-c` 이어받기가 남은 세그먼트만 다시 받습니다. 덜 쓰인 `.part`가 완성 파일로 오인되는 일도 없습니다.
 - `--no-cache` 옵션을 사용하면 기존 `.part` 파일을 무시하고 새로 다운로드합니다.
 - 와일드카드 URL은 HTML 디렉토리 리스트에서 `href="..."` 형식을 기반으로 파일을 찾습니다.
 - 다운로드는 항상 리다이렉트를 따르며, `-L`은 요청 모드에서만 리다이렉트 처리를 제어합니다.
@@ -242,7 +242,7 @@ https://example.com/file2.zip
 
 This project is licensed under the [MIT License](./LICENSE).
 
-이 프로젝트는 [MIT 라이선스](./LICENSE)를 따릅니다。
+이 프로젝트는 [MIT 라이선스](./LICENSE)를 따릅니다.
 
 ---
 
@@ -250,4 +250,4 @@ This project is licensed under the [MIT License](./LICENSE).
 
 For questions or improvements, feel free to open an issue or pull request!
 
-기여하고 싶거나 궁금한 점이 있으면 언제든 이슈나 PR을 열어주세요！
+기여하고 싶거나 궁금한 점이 있으면 언제든 이슈나 PR을 열어주세요!

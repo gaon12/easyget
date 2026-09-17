@@ -1,7 +1,13 @@
 __pycache__/
-*.part
 *.pyc
+*.part
+*.part.meta
+*.part.meta.tmp
 .pytest_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
 *.file
 out.txt
 dummy.part
