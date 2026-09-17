@@ -129,22 +129,28 @@ class SpeedLimiter:
     """
     Limits the byte-per-second rate of data transfer.
     데이터 전송의 초당 바이트 속도를 제한합니다.
+
+    Each chunk reserves a serialized time slot, so N threads share one
+    max_speed budget instead of each sleeping off the aggregate debt.
+    각 청크는 직렬화된 시간 슬롯을 예약하므로, N개의 스레드가 누적 부채를
+    각자 갚느라 과도하게 멈추지 않고 하나의 max_speed 예산을 공유합니다.
     """
 
     def __init__(self, max_speed: int):
         self.max_speed: int = max_speed
-        self.start_time: float = time.monotonic()
-        self.downloaded: int = 0
+        self._next_slot: float = time.monotonic()
         self._lock = threading.Lock()
 
     def wait(self, chunk_size: int) -> None:
-        """Wait if current throughput exceeds max_speed. / 현재 처리량이 최대 속도를 초과하면 대기합니다."""
+        """Sleep until this chunk's scheduled slot arrives. / 이 청크의 예약된 슬롯까지 대기합니다."""
         with self._lock:
-            self.downloaded += chunk_size
-            elapsed = time.monotonic() - self.start_time
-            expected = self.downloaded / self.max_speed
-            delay = expected - elapsed
+            now = time.monotonic()
+            if self._next_slot < now:
+                self._next_slot = now
+            slot = self._next_slot
+            self._next_slot = slot + chunk_size / self.max_speed
 
+        delay = slot - now
         if delay > 0:
             time.sleep(delay)
 
