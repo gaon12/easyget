@@ -60,7 +60,8 @@ class TestAsyncAPI(unittest.TestCase):
                 chunks.append(chunk)
 
             self.assertEqual(chunks, [b"ab", b"cd", b"ef"])
-            self.assertEqual(await async_response.read(), b"abcdef")
+            # Streamed bodies are consumed once and not retained in memory.
+            self.assertEqual(await async_response.read(), b"")
 
         asyncio.run(run())
 

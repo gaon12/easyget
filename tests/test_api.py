@@ -397,14 +397,28 @@ class TestAPI(unittest.TestCase):
         response._content = "café".encode("latin-1")
         self.assertEqual(response.text, "café")
 
-    def test_stream_iter_preserves_content(self):
+    def test_stream_iter_does_not_retain_content(self):
+        # Streamed bodies are consumed once and not buffered in memory
+        # (matches requests' iter_content semantics).
         response = easyget.Response(
             status_code=200, headers={}, url="http://example.com"
         )
         response._stream_response = io.BytesIO(b"abcdef")
 
         self.assertEqual(list(response.iter_bytes(2)), [b"ab", b"cd", b"ef"])
-        self.assertEqual(response.content, b"abcdef")
+        self.assertEqual(response.content, b"")
+
+    def test_stream_iter_decompresses_gzip_incrementally(self):
+        response = easyget.Response(
+            status_code=200,
+            headers={"Content-Encoding": "gzip"},
+            url="http://example.com",
+        )
+        response._stream_response = io.BytesIO(gzip.compress(b"streamed gzip body"))
+        response.set_auto_decompress(True)
+
+        self.assertEqual(b"".join(response.iter_bytes(4)), b"streamed gzip body")
+        self.assertEqual(response.content, b"")
 
     def test_response_gzip_decompression(self):
         response = easyget.Response(
