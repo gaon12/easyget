@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=64", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -10,7 +10,20 @@ authors = [
     { name = "easyget-cli", email = "easyget@google.com" }
 ]
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.12"
+keywords = ["downloader", "wget", "curl", "http-client", "cli", "zero-dependency"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Utilities",
+]
 dependencies = []
 
 [project.urls]
