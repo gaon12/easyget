@@ -114,7 +114,12 @@ class ProgressBar:
         with self._lock:
             if sys.stderr.isatty():
                 if self.position > 0:
-                    sys.stderr.write(f"\033[{self.position}B\n")
+                    # Down to this bar's line, terminate it, then return to
+                    # the top (position 0) line so the next positioned bar
+                    # lands on the same line instead of drifting downward.
+                    sys.stderr.write(
+                        f"\033[{self.position}B\n\033[{self.position + 1}A"
+                    )
                 else:
                     sys.stderr.write("\n")
                 sys.stderr.flush()

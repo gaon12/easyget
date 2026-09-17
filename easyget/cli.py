@@ -674,6 +674,11 @@ def main():
             (".txt", ".csv", ".tsv")
         ):
             file_list = parse_file_list(args.input)
+            if args.output:
+                logger.warning(
+                    "-o/--output is ignored when downloading from a URL list "
+                    "file; use -P/--output-dir or a 'filename' column instead."
+                )
         elif "*" in args.input:
             file_list = expand_wildcard_url(args.input, headers)
         else:
