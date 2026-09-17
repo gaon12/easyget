@@ -1,11 +1,12 @@
 import email.utils
+import json
 import logging
 import os
 import threading
 import time
 import urllib.error
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC
 
 from .exceptions import DownloadError, EasyGetError, IntegrityError
@@ -58,6 +59,77 @@ def _compute_retry_delay(
     if retry_max_delay > 0:
         wait_time = min(wait_time, retry_max_delay)
     return wait_time
+
+
+def _segment_meta_path(tmp_path: str) -> str:
+    return tmp_path + ".meta"
+
+
+def _new_segment_meta(
+    total_size: int, threads: int, info_headers: dict[str, str]
+) -> dict[str, object]:
+    """Build the sidecar describing which byte ranges still need fetching."""
+    part_size = total_size // threads
+    ranges = []
+    for i in range(threads):
+        start = i * part_size
+        end = total_size - 1 if i == threads - 1 else start + part_size - 1
+        ranges.append({"start": start, "end": end, "done": False})
+    return {
+        "version": 1,
+        "size": total_size,
+        "etag": info_headers.get("ETag"),
+        "last_modified": info_headers.get("Last-Modified"),
+        "ranges": ranges,
+    }
+
+
+def _write_segment_meta(path: str, meta: dict[str, object]) -> None:
+    """Persist segment state atomically so a crash can't leave a torn file."""
+    staging = path + ".tmp"
+    with open(staging, "w", encoding="utf-8") as f:
+        json.dump(meta, f)
+    os.replace(staging, path)
+
+
+def _load_segment_meta(
+    path: str, total_size: int | None, info_headers: dict[str, str]
+) -> dict[str, object] | None:
+    """
+    Load segment state if it provably matches the remote file, else None.
+    A .part file preallocated for range writes is full of zero holes that are
+    indistinguishable from real bytes by size alone, so an untrusted meta is
+    worse than none at all.
+    """
+    try:
+        with open(path, encoding="utf-8") as f:
+            meta = json.load(f)
+    except (OSError, ValueError):
+        return None
+
+    if not isinstance(meta, dict) or meta.get("size") != total_size:
+        return None
+    for key, header in (("etag", "ETag"), ("last_modified", "Last-Modified")):
+        stored, current = meta.get(key), info_headers.get(header)
+        if stored and current and stored != current:
+            return None
+
+    ranges = meta.get("ranges")
+    if not isinstance(ranges, list) or not ranges:
+        return None
+    covered = 0
+    for seg in ranges:
+        if not isinstance(seg, dict) or not isinstance(seg.get("done"), bool):
+            return None
+        start, end = seg.get("start"), seg.get("end")
+        if not (
+            isinstance(start, int)
+            and isinstance(end, int)
+            and 0 <= start <= end < total_size
+        ):
+            return None
+        covered += end - start + 1
+    return meta if covered == total_size else None
 
 
 def get_file_info(
@@ -208,6 +280,7 @@ def download_file(
 
     # Retry loop
     attempt = 0
+    meta_created = False  # segment meta written by this call, reusable on retry
     session = Session()
     try:
         while attempt <= retries:
@@ -271,8 +344,12 @@ def download_file(
                     }
 
                 tmp_path = resolved_output + ".part"
-                if ignore_cache and os.path.exists(tmp_path):
-                    os.remove(tmp_path)
+                meta_path = _segment_meta_path(tmp_path)
+                if ignore_cache:
+                    for stale in (tmp_path, meta_path):
+                        if os.path.exists(stale):
+                            os.remove(stale)
+                    meta_created = False
 
                 # Validation for multi-threading
                 if attempt_threads > 1 and not range_supported:
@@ -286,11 +363,34 @@ def download_file(
                     )
                     attempt_threads = 1
 
+                # Segmented .part files are preallocated to full size up front,
+                # so byte-count alone cannot tell written ranges from zero
+                # holes — only the .meta sidecar can. Anything unverifiable is
+                # restarted rather than risk renaming a hollow file "complete".
+                segment_meta = None
+                if os.path.exists(meta_path):
+                    if attempt_threads > 1 and (resume or meta_created):
+                        segment_meta = _load_segment_meta(
+                            meta_path, total_size, info_headers
+                        )
+                    tmp_usable = (
+                        os.path.exists(tmp_path)
+                        and os.path.getsize(tmp_path) == total_size
+                    )
+                    if segment_meta is None or not tmp_usable:
+                        segment_meta = None
+                        meta_created = False
+                        if os.path.exists(tmp_path):
+                            os.remove(tmp_path)
+                        os.remove(meta_path)
+
                 downloaded_size = 0
                 bytes_written = 0
                 mode_flag = "wb"
 
-                if resume and os.path.exists(tmp_path):
+                # Sequential .part files grow only by appending, so a full-size
+                # one without a meta file is genuinely complete.
+                if resume and segment_meta is None and os.path.exists(tmp_path):
                     downloaded_size = os.path.getsize(tmp_path)
                     if total_size and downloaded_size >= total_size:
                         if safe_rename(tmp_path, resolved_output, force, skip_existing):
@@ -303,7 +403,7 @@ def download_file(
 
                     if attempt_threads > 1:
                         logger.debug(
-                            "Resuming multi-threaded download is not fully supported. Falling back to single-threaded."
+                            "Sequential .part files resume by appending; falling back to single-threaded."
                         )
                         attempt_threads = 1
 
@@ -349,44 +449,59 @@ def download_file(
                             if pbar:
                                 pbar.update(len(chunk))
                 else:
-                    if not os.path.exists(tmp_path):
-                        with open(tmp_path, "wb") as f:
-                            if total_size:
-                                f.truncate(total_size)
-
-                    error_event = threading.Event()
-                    range_list = []
-                    part_size = total_size // attempt_threads
-                    for i in range(attempt_threads):
-                        start = i * part_size
-                        end = (
-                            total_size - 1
-                            if i == attempt_threads - 1
-                            else (start + part_size - 1)
+                    if segment_meta is None:
+                        segment_meta = _new_segment_meta(
+                            total_size, attempt_threads, info_headers
                         )
-                        range_list.append((start, end))
+                        _write_segment_meta(meta_path, segment_meta)
+                        meta_created = True
+                        with open(tmp_path, "wb") as f:
+                            f.truncate(total_size)
 
-                    # ThreadPoolExecutor propagates the original worker exception
-                    # through future.result(); error_event makes peers abort early.
-                    with ThreadPoolExecutor(max_workers=attempt_threads) as pool:
-                        futures = [
-                            pool.submit(
-                                download_range,
-                                url,
-                                start,
-                                end,
-                                request_headers,
-                                tmp_path,
-                                pbar,
-                                limiter,
-                                error_event,
-                                session,
-                                timeout,
-                            )
-                            for start, end in range_list
-                        ]
-                        for future in futures:
-                            future.result()
+                    if pbar:
+                        done_bytes = sum(
+                            seg["end"] - seg["start"] + 1
+                            for seg in segment_meta["ranges"]
+                            if seg["done"]
+                        )
+                        if done_bytes:
+                            pbar.update(done_bytes)
+
+                    pending = [
+                        i
+                        for i, seg in enumerate(segment_meta["ranges"])
+                        if not seg["done"]
+                    ]
+                    if pending:
+                        error_event = threading.Event()
+                        # ThreadPoolExecutor propagates the worker exception via
+                        # future.result(); error_event makes peers abort early.
+                        # Completed ranges are marked in meta as they finish so
+                        # a later resume only refetches what is still missing.
+                        with ThreadPoolExecutor(
+                            max_workers=min(attempt_threads, len(pending))
+                        ) as pool:
+                            futures = {}
+                            for i in pending:
+                                seg = segment_meta["ranges"][i]
+                                future = pool.submit(
+                                    download_range,
+                                    url,
+                                    seg["start"],
+                                    seg["end"],
+                                    request_headers,
+                                    tmp_path,
+                                    pbar,
+                                    limiter,
+                                    error_event,
+                                    session,
+                                    timeout,
+                                )
+                                futures[future] = i
+                            for future in as_completed(futures):
+                                future.result()
+                                segment_meta["ranges"][futures[future]]["done"] = True
+                                _write_segment_meta(meta_path, segment_meta)
 
                 if pbar:
                     pbar.close()
@@ -398,6 +513,8 @@ def download_file(
                             "skipped": True,
                         }
                     raise DownloadError(f"Failed to save {resolved_output}")
+                if os.path.exists(meta_path):
+                    os.remove(meta_path)
 
                 logger.info(f"Successfully downloaded: {resolved_output}")
                 final_bytes = (
@@ -421,7 +538,7 @@ def download_file(
                     if pbar:
                         pbar.close()
                     raise DownloadError(
-                        f"Download failed after {retries} retries: {e}"
+                        f"Download failed after {attempt} attempts ({retries} retries): {e}"
                     ) from e
 
                 wait_time = _compute_retry_delay(
