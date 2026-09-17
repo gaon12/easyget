@@ -445,6 +445,64 @@ class TestCLI(unittest.TestCase):
         self.assertEqual(ctx.exception.code, 2)
         mock_session_cls.assert_not_called()
 
+    @patch("easyget.cli.Session")
+    def test_request_mode_json_data_conflicts_with_data(self, mock_session_cls):
+        out = io.StringIO()
+        argv = [
+            "easyget",
+            "--json",
+            "-d",
+            "x=1",
+            "--json-data",
+            '{"a": 1}',
+            "https://example.com",
+        ]
+        with (
+            patch.object(sys, "argv", argv),
+            redirect_stdout(out),
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            cli.main()
+
+        self.assertEqual(ctx.exception.code, 2)
+        mock_session_cls.assert_not_called()
+
+    @patch("easyget.cli.download_file")
+    def test_download_mode_forwards_timeout(self, mock_download):
+        out = io.StringIO()
+        argv = [
+            "easyget",
+            "--json",
+            "--timeout",
+            "5",
+            "http://example.com/file.txt",
+        ]
+        with patch.object(sys, "argv", argv), redirect_stdout(out):
+            cli.main()
+
+        self.assertEqual(mock_download.call_args.kwargs["timeout"], 5.0)
+
+    @patch("easyget.cli.download_file")
+    def test_batch_partial_failure_exit_code_without_json(self, mock_download):
+        mock_download.side_effect = [
+            {"output": "a.zip", "bytes": 1, "skipped": False},
+            RuntimeError("boom"),
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            list_path = os.path.join(tmpdir, "urls.txt")
+            with open(list_path, "w", encoding="utf-8") as f:
+                f.write("http://example.com/a.zip\n")
+                f.write("http://example.com/b.zip\n")
+
+            argv = ["easyget", list_path]
+            with (
+                patch.object(sys, "argv", argv),
+                self.assertRaises(SystemExit) as ctx,
+            ):
+                cli.main()
+
+        self.assertEqual(ctx.exception.code, 3)
+
 
 if __name__ == "__main__":
     unittest.main()
