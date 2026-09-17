@@ -31,7 +31,7 @@ jobs:
       - name: Validate tag and package version
         run: |
           python - <<'PY'
-          import tomllib
+          import re
           from pathlib import Path
           import os
           import sys
@@ -41,10 +41,18 @@ jobs:
               print(f"Tag must start with 'v': {tag}")
               sys.exit(1)
 
-          package_version = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+          # Version is declared dynamically via easyget.__version__, not in
+          # pyproject's [project] table, so read it from the package itself.
+          init_src = Path("easyget/__init__.py").read_text(encoding="utf-8")
+          match = re.search(r'__version__\s*=\s*"([^"]+)"', init_src)
+          if not match:
+              print("Could not find __version__ in easyget/__init__.py")
+              sys.exit(1)
+          package_version = match.group(1)
+
           expected_tag = f"v{package_version}"
           if tag != expected_tag:
-              print(f"Tag/version mismatch: tag={tag}, pyproject={package_version} (expected tag {expected_tag})")
+              print(f"Tag/version mismatch: tag={tag}, package={package_version} (expected tag {expected_tag})")
               sys.exit(1)
           print(f"Tag/version validated: {tag}")
           PY
