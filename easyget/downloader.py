@@ -185,9 +185,10 @@ def download_file(
     retry_backoff: str = "exponential",
     retry_max_delay: float = 30.0,
     timestamping: bool = False,
-) -> None:
+) -> dict[str, object]:
     """
     Main orchestrator for downloading a single file with retries and integrity checks.
+    Returns {"output", "bytes", "skipped"} for automation and JSON output.
     """
     base_headers = dict(headers or {})
 
@@ -228,7 +229,11 @@ def download_file(
                 if not should_download_output(
                     resolved_output, force=force, skip_existing=skip_existing
                 ):
-                    return
+                    return {
+                        "output": resolved_output,
+                        "bytes": 0,
+                        "skipped": True,
+                    }
 
                 if timestamping and os.path.exists(resolved_output):
                     remote_modified_raw = info_headers.get("Last-Modified")
@@ -243,7 +248,11 @@ def download_file(
                             logger.info(
                                 f"Local file is up-to-date. Skipping: {resolved_output}"
                             )
-                            return
+                            return {
+                                "output": resolved_output,
+                                "bytes": 0,
+                                "skipped": True,
+                            }
 
                 tmp_path = resolved_output + ".part"
                 if ignore_cache and os.path.exists(tmp_path):
@@ -262,6 +271,7 @@ def download_file(
                     attempt_threads = 1
 
                 downloaded_size = 0
+                bytes_written = 0
                 mode_flag = "wb"
 
                 if resume and os.path.exists(tmp_path):
@@ -269,7 +279,11 @@ def download_file(
                     if total_size and downloaded_size >= total_size:
                         if safe_rename(tmp_path, resolved_output, force, skip_existing):
                             logger.info(f"File already complete: {resolved_output}")
-                        return
+                        return {
+                            "output": resolved_output,
+                            "bytes": downloaded_size,
+                            "skipped": True,
+                        }
 
                     if attempt_threads > 1:
                         logger.debug(
@@ -309,6 +323,7 @@ def download_file(
                             if limiter:
                                 limiter.wait(len(chunk))
                             f.write(chunk)
+                            bytes_written += len(chunk)
                             if pbar:
                                 pbar.update(len(chunk))
                 else:
@@ -357,11 +372,24 @@ def download_file(
                     pbar.close()
                 if not safe_rename(tmp_path, resolved_output, force, skip_existing):
                     if not os.path.exists(tmp_path):
-                        return
+                        return {
+                            "output": resolved_output,
+                            "bytes": 0,
+                            "skipped": True,
+                        }
                     raise DownloadError(f"Failed to save {resolved_output}")
 
                 logger.info(f"Successfully downloaded: {resolved_output}")
-                return
+                final_bytes = (
+                    downloaded_size + bytes_written
+                    if attempt_threads == 1
+                    else (total_size or 0)
+                )
+                return {
+                    "output": resolved_output,
+                    "bytes": final_bytes,
+                    "skipped": False,
+                }
 
             except (urllib.error.URLError, TimeoutError, EasyGetError) as e:
                 if isinstance(e, EasyGetError) and not e.retryable:
