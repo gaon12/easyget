@@ -24,6 +24,11 @@ def parse_file_list(file_path: str) -> list[tuple[str, str]]:
             elif ext in [".csv", ".tsv"]:
                 delimiter = "," if ext == ".csv" else "\t"
                 reader = csv.DictReader(f, delimiter=delimiter)
+                if reader.fieldnames and "url" not in reader.fieldnames:
+                    logger.warning(
+                        f"'{file_path}' has no 'url' column; using the first column "
+                        f"({reader.fieldnames[0]!r}) as URLs."
+                    )
                 for row in reader:
                     url_val = row.get("url")
                     if not url_val:
