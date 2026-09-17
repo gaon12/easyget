@@ -136,12 +136,14 @@ print(upload.status_code)
 import asyncio
 import easyget
 
+
 async def main():
     async with easyget.AsyncSession() as session:
         # aiohttp-like: async with session.get(...)
         async with session.get("https://httpbin.org/get") as resp:
             data = await resp.json()
             print(resp.status, data)
+
 
 asyncio.run(main())
 ```
@@ -199,11 +201,17 @@ https://example.com/file2.zip
 | `--username`, `--password` | Basic 인증용 계정 정보 |
 | `--token`                | Bearer 토큰 인증 |
 | `--mode`                 | Download mode: `fast` or `accurate` |
-| `--continue`, `--retry-delay`, `--retry-max-delay`, `--retry-backoff`, `--timestamping` | wget-style advanced download controls |
+| `-f`, `--force`          | Overwrite existing files without prompting |
+| `-s`, `--skip-existing`  | Skip files that already exist |
+| `-P`, `--output-dir`     | Directory to save downloaded files |
+| `-q`, `--quiet`          | Quiet mode (no output) |
+| `-v`, `--verbose`        | Display debug logs |
+| `--continue`, `--retry`, `--retry-delay`, `--retry-max-delay`, `--retry-backoff`, `--timestamping` | wget-style advanced download controls |
 | `-X`, `-d`, `--json-data`, `--data-urlencode` | HTTP request mode body/method options |
 | `-F`, `-I`, `-L`, `--fail`, `-i` | curl-style request mode controls |
 | `--output-select`        | request mode response selection (`all/status/headers/body`) |
 | `--proxy`, `--cacert`, `-k`, `--cert`, `--key`, `--compressed` | request mode transport/TLS controls |
+| `--timeout`              | HTTP timeout in seconds for request mode (기본값: 30) |
 | `--json`, `--ai`         | machine output mode / AI compact output mode |
 
 ---
@@ -213,10 +221,12 @@ https://example.com/file2.zip
 - When a download is interrupted, a `.part` file is created.
 - Use `--no-cache` to ignore existing `.part` files and redownload.
 - Wildcard URLs are based on `href="..."` format in HTML directory listings.
+- Downloads always follow redirects; `-L` only controls redirect handling in request mode.
 
 - 다운로드가 중단되면 `.part` 파일이 생성됩니다.
 - `--no-cache` 옵션을 사용하면 기존 `.part` 파일을 무시하고 새로 다운로드합니다.
 - 와일드카드 URL은 HTML 디렉토리 리스트에서 `href="..."` 형식을 기반으로 파일을 찾습니다.
+- 다운로드는 항상 리다이렉트를 따르며, `-L`은 요청 모드에서만 리다이렉트 처리를 제어합니다.
 
 ---
 
