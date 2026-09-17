@@ -321,7 +321,9 @@ def _select_request_payload(
     response, method: str, output: str | None, select: str, ai_mode: bool
 ) -> dict[str, Any]:
     if ai_mode:
-        base = {"m": method, "o": output}
+        # "meth" not "m": the outer payload already uses "m" for easyget's
+        # mode ("request"/"download"), and nested keys must not collide.
+        base = {"meth": method, "o": output}
     else:
         base = {"method": method, "output": output}
 
