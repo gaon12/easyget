@@ -213,6 +213,8 @@ https://example.com/file2.zip
 | `--proxy`, `--cacert`, `-k`, `--cert`, `--key`, `--compressed` | request mode transport/TLS controls |
 | `--timeout`              | HTTP timeout in seconds for request mode (기본값: 30) |
 | `--json`, `--ai`         | machine output mode / AI compact output mode |
+| `--data-binary`          | Raw request body; `@path` reads from a file (request mode) |
+| `-V`, `--version`        | Print version and exit (버전 출력) |
 
 ---
 
@@ -222,11 +224,17 @@ https://example.com/file2.zip
 - Use `--no-cache` to ignore existing `.part` files and redownload.
 - Wildcard URLs are based on `href="..."` format in HTML directory listings.
 - Downloads always follow redirects; `-L` only controls redirect handling in request mode.
+- Progress bars are written to stderr, so stdout stays clean for `--json` and shell pipes.
+- URLs without a filename (e.g., `https://host/dir/`) are saved as `index.html`, matching wget.
+- Server-provided filenames are sanitized to a safe basename.
 
 - 다운로드가 중단되면 `.part` 파일이 생성됩니다.
 - `--no-cache` 옵션을 사용하면 기존 `.part` 파일을 무시하고 새로 다운로드합니다.
 - 와일드카드 URL은 HTML 디렉토리 리스트에서 `href="..."` 형식을 기반으로 파일을 찾습니다.
 - 다운로드는 항상 리다이렉트를 따르며, `-L`은 요청 모드에서만 리다이렉트 처리를 제어합니다.
+- 진행률 표시는 stderr로 출력되므로 `--json` 출력과 셸 파이프가 깨끗하게 유지됩니다.
+- 파일명이 없는 URL(예: `https://host/dir/`)은 wget과 마찬가지로 `index.html`로 저장됩니다.
+- 서버가 보낸 파일명은 안전한 basename으로 정제됩니다.
 
 ---
 
