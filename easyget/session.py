@@ -487,6 +487,17 @@ class Session:
                 },
             )
         except urllib.error.HTTPError as e:
+            if allow_redirects and 300 <= e.code < 400:
+                # A 3xx surfacing here means the redirect handler refused
+                # to follow it (unsafe scheme, loop limit). Returning it as
+                # a normal response would make downloads write the empty
+                # redirect body and report success.
+                raise RequestError(
+                    f"Redirect refused: {e.code} {e.reason}",
+                    hint="The server redirected to a location easyget refuses to follow.",
+                    context={"url": url, "status_code": e.code},
+                    retryable=False,
+                ) from e
             # Even on error, we might want the response object
             if read_timeout is not None:
                 self._apply_read_timeout(e, read_timeout)
@@ -518,6 +529,14 @@ class Session:
                     "reason": str(e.reason) if hasattr(e, "reason") else str(e),
                 },
             )
+        except OSError as e:
+            # Raw socket errors (ConnectionResetError, TimeoutError) raised
+            # by http.client that urllib never wrapped in a URLError.
+            raise RequestError(
+                f"Request failed: {e}",
+                hint="The connection was lost before a response was received.",
+                context={"url": url, "reason": str(e)},
+            ) from e
 
     def get(self, url: str, **kwargs) -> Response:
         return self.request("GET", url, **kwargs)
