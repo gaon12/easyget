@@ -2,7 +2,7 @@ install:
 	pip install -e .
 
 package:
-	python setup.py sdist bdist_wheel
+	python -m build
 
 upload:
 	twine upload dist/*
