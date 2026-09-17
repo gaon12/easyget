@@ -174,6 +174,12 @@ def _sanitize_filename(name: str) -> str | None:
     서버가 보낸 파일명을 안전한 basename으로 정제합니다.
     """
     name = posixpath.basename(name.replace("\\", "/")).strip()
+    # Characters that are invalid in Windows filenames; ':' especially would
+    # otherwise write into an NTFS alternate data stream.
+    name = "".join(c for c in name if c not in '<>:"|?*')
+    # Windows silently strips trailing dots and spaces; normalize them away
+    # so the written name matches what we validated.
+    name = name.rstrip(". ")
     stem = name.split(".", 1)[0].upper()
     if (
         not name
@@ -193,8 +199,11 @@ def get_filename_from_headers(headers: dict[str, str], url: str) -> str:
         star = re.search(r"filename\*\s*=\s*([^;\s]+)", cd, re.IGNORECASE)
         if star:
             raw = star.group(1).strip("\"'")
-            _charset, _, encoded = raw.partition("''")
-            name = _sanitize_filename(unquote(encoded or raw))
+            # RFC 5987: filename*=charset'lang'value — lang may be empty, so
+            # split on the first two apostrophes rather than a literal "''".
+            parts = raw.split("'", 2)
+            encoded = parts[2] if len(parts) == 3 else raw
+            name = _sanitize_filename(unquote(encoded))
             if name:
                 return name
 
@@ -217,11 +226,13 @@ def get_filename_from_headers(headers: dict[str, str], url: str) -> str:
 def get_filename_from_url(url: str) -> str:
     """Extract the filename from a URL path. / URL 경로에서 파일명을 추출합니다."""
     path = urlparse(url).path
-    name = posixpath.basename(path)
     # wget-compatible fallback: directory or nameless URLs save as index.html
-    if not name or path.endswith("/"):
+    if path.endswith("/"):
         return "index.html"
-    return name
+    # Percent-decode like wget does; _sanitize_filename re-basenames the
+    # decoded value so a literal %2F cannot smuggle a path separator.
+    name = _sanitize_filename(unquote(posixpath.basename(path)))
+    return name if name is not None else "index.html"
 
 
 def should_download_output(

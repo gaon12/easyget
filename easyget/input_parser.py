@@ -2,7 +2,7 @@ import csv
 import logging
 import os
 
-from .utils import get_filename_from_url
+from .utils import _sanitize_filename, get_filename_from_url
 
 logger = logging.getLogger(__name__)
 
@@ -38,8 +38,19 @@ def parse_file_list(file_path: str) -> list[tuple[str, str]]:
                     if not url_val:
                         continue
 
-                    filename_val = row.get("filename") or get_filename_from_url(url_val)
-                    file_list.append((url_val.strip(), filename_val.strip()))
+                    filename_val = row.get("filename")
+                    if filename_val:
+                        # Sanitize user-supplied names — a hostile csv could
+                        # otherwise write outside the output directory.
+                        filename_val = _sanitize_filename(filename_val.strip())
+                        if filename_val is None:
+                            logger.warning(
+                                f"Ignoring unsafe filename in '{file_path}' row; "
+                                "deriving it from the URL instead."
+                            )
+                    if not filename_val:
+                        filename_val = get_filename_from_url(url_val)
+                    file_list.append((url_val.strip(), filename_val))
             else:
                 logger.error(
                     f"easyget error: Unsupported file format '{ext}'. Supported: txt, csv, tsv."
