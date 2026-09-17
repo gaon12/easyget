@@ -1,5 +1,6 @@
 import logging
 import os
+import posixpath
 import re
 import sys
 import threading
@@ -42,7 +43,7 @@ class ProgressBar:
         self.position: int = position
         self.unit: str = unit
         self.current: int = 0
-        self.start_time: float = time.time()
+        self.start_time: float = time.monotonic()
         self._last_update: float = 0.0
         self._lock = threading.Lock()
         self._spinner = ["|", "/", "-", "\\"]
@@ -52,7 +53,7 @@ class ProgressBar:
         """Increment progress and refresh display."""
         with self._lock:
             self.current += n
-            now = time.time()
+            now = time.monotonic()
             if now - self._last_update > 0.1 or (
                 self.total and self.current >= self.total
             ):
@@ -61,11 +62,11 @@ class ProgressBar:
                 self._last_update = now
 
     def display(self) -> None:
-        """Render the bar to stdout using ANSI escape codes."""
-        if not sys.stdout.isatty():
+        """Render the bar to stderr so stdout stays clean for pipes and JSON."""
+        if not sys.stderr.isatty():
             return
 
-        elapsed = time.time() - self.start_time
+        elapsed = time.monotonic() - self.start_time
         speed = self.current / elapsed if elapsed > 0 else 0
 
         # Calculate percentage and bar
@@ -105,18 +106,18 @@ class ProgressBar:
             curr_str = str(self.current)
 
         output = f"{prefix}{self.desc:20}: [{bar}] {pct_str} | {curr_str}/{total_str} | {speed_str}{suffix}"
-        sys.stdout.write(output)
-        sys.stdout.flush()
+        sys.stderr.write(output)
+        sys.stderr.flush()
 
     def close(self) -> None:
         """Ensure the terminal cursor is moved past the progress bar area."""
         with self._lock:
-            if sys.stdout.isatty():
+            if sys.stderr.isatty():
                 if self.position > 0:
-                    sys.stdout.write(f"\033[{self.position}B\n")
+                    sys.stderr.write(f"\033[{self.position}B\n")
                 else:
-                    sys.stdout.write("\n")
-                sys.stdout.flush()
+                    sys.stderr.write("\n")
+                sys.stderr.flush()
 
 
 class SpeedLimiter:
@@ -127,7 +128,7 @@ class SpeedLimiter:
 
     def __init__(self, max_speed: int):
         self.max_speed: int = max_speed
-        self.start_time: float = time.time()
+        self.start_time: float = time.monotonic()
         self.downloaded: int = 0
         self._lock = threading.Lock()
 
@@ -135,7 +136,7 @@ class SpeedLimiter:
         """Wait if current throughput exceeds max_speed. / 현재 처리량이 최대 속도를 초과하면 대기합니다."""
         with self._lock:
             self.downloaded += chunk_size
-            elapsed = time.time() - self.start_time
+            elapsed = time.monotonic() - self.start_time
             expected = self.downloaded / self.max_speed
             delay = expected - elapsed
 
@@ -159,14 +160,42 @@ def parse_speed(speed_str: str) -> int | None:
         return None
 
 
+def _sanitize_filename(name: str) -> str | None:
+    """
+    Reduce a server-supplied filename to a safe basename.
+    서버가 보낸 파일명을 안전한 basename으로 정제합니다.
+    """
+    name = posixpath.basename(name.replace("\\", "/")).strip()
+    if name in ("", ".", ".."):
+        return None
+    return name
+
+
 def get_filename_from_headers(headers: dict[str, str], url: str) -> str:
     """Extract filename from Content-Disposition header or fallback to URL."""
     cd = headers.get("Content-Disposition")
     if cd:
-        # Regex to find filename from header
-        fname = re.findall(r'filename=["\']?([^"\']+)["\']?', cd)
-        if fname:
-            return unquote(fname[0])
+        # RFC 5987 filename*= takes precedence over the ASCII filename= form.
+        star = re.search(r"filename\*\s*=\s*([^;\s]+)", cd, re.IGNORECASE)
+        if star:
+            raw = star.group(1).strip("\"'")
+            _charset, _, encoded = raw.partition("''")
+            name = _sanitize_filename(unquote(encoded or raw))
+            if name:
+                return name
+
+        match = re.search(
+            r'filename\s*=\s*"([^"]+)"'
+            r"|filename\s*=\s*'([^']+)'"
+            r"|filename\s*=\s*([^;\s]+)",
+            cd,
+            re.IGNORECASE,
+        )
+        if match:
+            candidate = next(g for g in match.groups() if g is not None)
+            name = _sanitize_filename(unquote(candidate))
+            if name:
+                return name
 
     return get_filename_from_url(url)
 
@@ -174,7 +203,11 @@ def get_filename_from_headers(headers: dict[str, str], url: str) -> str:
 def get_filename_from_url(url: str) -> str:
     """Extract the filename from a URL path. / URL 경로에서 파일명을 추출합니다."""
     path = urlparse(url).path
-    return os.path.basename(path) or "downloaded.file"
+    name = posixpath.basename(path)
+    # wget-compatible fallback: directory or nameless URLs save as index.html
+    if not name or path.endswith("/"):
+        return "index.html"
+    return name
 
 
 def should_download_output(
