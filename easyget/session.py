@@ -1,24 +1,29 @@
-import json as jsonlib
 import base64
 import http.cookiejar
+import json as jsonlib
 import mimetypes
 import os
 import ssl
 import urllib.error
-import urllib.request
 import urllib.parse
-from typing import Dict, Optional, Any, Union, Sequence, Tuple, List, Callable
+import urllib.request
+from collections.abc import Callable, Sequence
+from typing import Any
 from uuid import uuid4
+
+from . import __version__
 from .models import Response
 
-TimeoutType = Optional[Union[int, float, Tuple[Optional[float], Optional[float]]]]
-VerifyType = Union[bool, str, os.PathLike[str]]
-CertType = Union[str, os.PathLike[str], Tuple[Union[str, os.PathLike[str]], Union[str, os.PathLike[str]]]]
-ProxyType = Union[str, Dict[str, str]]
-ResponseHookType = Union[
-    Callable[[Response, Dict[str, Any]], Optional[Response]],
-    Sequence[Callable[[Response, Dict[str, Any]], Optional[Response]]],
-]
+TimeoutType = int | float | tuple[float | None, float | None] | None
+VerifyType = bool | str | os.PathLike[str]
+CertType = (
+    str | os.PathLike[str] | tuple[str | os.PathLike[str], str | os.PathLike[str]]
+)
+ProxyType = str | dict[str, str]
+ResponseHookType = (
+    Callable[[Response, dict[str, Any]], Response | None]
+    | Sequence[Callable[[Response, dict[str, Any]], Response | None]]
+)
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -30,21 +35,20 @@ class Session:
     """
     HTTP Session to manage headers, cookies, etc.
     """
+
     def __init__(
         self,
-        headers: Optional[Dict[str, str]] = None,
+        headers: dict[str, str] | None = None,
         verify: VerifyType = True,
-        cert: Optional[CertType] = None,
-        proxies: Optional[ProxyType] = None,
+        cert: CertType | None = None,
+        proxies: ProxyType | None = None,
     ):
-        self.headers: Dict[str, str] = {
-            'User-Agent': 'easyget/1.0.1'
-        }
+        self.headers: dict[str, str] = {"User-Agent": f"easyget/{__version__}"}
         if headers:
             self.headers.update(headers)
         self._default_verify: VerifyType = verify
-        self._default_cert: Optional[CertType] = cert
-        self._default_proxies: Optional[ProxyType] = proxies
+        self._default_cert: CertType | None = cert
+        self._default_proxies: ProxyType | None = proxies
         self.cookies = http.cookiejar.CookieJar()
         self._opener = self._build_transport_opener(
             allow_redirects=True,
@@ -61,7 +65,7 @@ class Session:
         self._open_responses = set()
 
     @staticmethod
-    def _normalize_proxy_map(proxies: Optional[ProxyType]) -> Optional[Dict[str, str]]:
+    def _normalize_proxy_map(proxies: ProxyType | None) -> dict[str, str] | None:
         if proxies is None:
             return None
         if isinstance(proxies, str):
@@ -73,9 +77,13 @@ class Session:
     @staticmethod
     def _build_ssl_context(
         verify: VerifyType,
-        cert: Optional[CertType],
-    ) -> Optional[ssl.SSLContext]:
-        needs_context = cert is not None or verify is False or isinstance(verify, (str, os.PathLike))
+        cert: CertType | None,
+    ) -> ssl.SSLContext | None:
+        needs_context = (
+            cert is not None
+            or verify is False
+            or isinstance(verify, (str, os.PathLike))
+        )
         if not needs_context:
             return None
 
@@ -104,10 +112,10 @@ class Session:
         self,
         allow_redirects: bool,
         verify: VerifyType,
-        cert: Optional[CertType],
-        proxies: Optional[ProxyType],
+        cert: CertType | None,
+        proxies: ProxyType | None,
     ):
-        handlers: List[Any] = [urllib.request.HTTPCookieProcessor(self.cookies)]
+        handlers: list[Any] = [urllib.request.HTTPCookieProcessor(self.cookies)]
 
         proxy_map = self._normalize_proxy_map(proxies)
         if proxy_map is not None:
@@ -122,7 +130,9 @@ class Session:
 
         return urllib.request.build_opener(*handlers)
 
-    def _build_url(self, url: str, params: Optional[Union[Dict[str, Any], Sequence[Tuple[str, Any]]]] = None) -> str:
+    def _build_url(
+        self, url: str, params: dict[str, Any] | Sequence[tuple[str, Any]] | None = None
+    ) -> str:
         if not params:
             return url
 
@@ -131,16 +141,17 @@ class Session:
         new_query = urllib.parse.urlencode(params, doseq=True)
         new_pairs = urllib.parse.parse_qsl(new_query, keep_blank_values=True)
         merged_query = urllib.parse.urlencode(existing_pairs + new_pairs, doseq=True)
-        return urllib.parse.urlunsplit((split.scheme, split.netloc, split.path, merged_query, split.fragment))
+        return urllib.parse.urlunsplit(
+            (split.scheme, split.netloc, split.path, merged_query, split.fragment)
+        )
 
     @staticmethod
-    def _normalize_response_hooks(hooks: Optional[Any]) -> List[Callable[[Response, Dict[str, Any]], Optional[Response]]]:
+    def _normalize_response_hooks(
+        hooks: Any | None,
+    ) -> list[Callable[[Response, dict[str, Any]], Response | None]]:
         if hooks is None:
             return []
-        if isinstance(hooks, dict):
-            response_hooks = hooks.get("response")
-        else:
-            response_hooks = hooks
+        response_hooks = hooks.get("response") if isinstance(hooks, dict) else hooks
 
         if response_hooks is None:
             return []
@@ -153,15 +164,17 @@ class Session:
                     raise TypeError("response hooks must be callables")
                 normalized.append(hook)
             return normalized
-        raise TypeError("hooks must be a callable, list of callables, or {'response': ...}")
+        raise TypeError(
+            "hooks must be a callable, list of callables, or {'response': ...}"
+        )
 
     @classmethod
     def _run_response_hooks(
         cls,
         response: Response,
         *,
-        hooks: Optional[Any],
-        request_meta: Dict[str, Any],
+        hooks: Any | None,
+        request_meta: dict[str, Any],
     ) -> Response:
         for hook in cls._normalize_response_hooks(hooks):
             maybe_response = hook(response, request_meta)
@@ -170,22 +183,19 @@ class Session:
         return response
 
     @staticmethod
-    def _encode_basic_auth(auth: Tuple[str, str]) -> str:
+    def _encode_basic_auth(auth: tuple[str, str]) -> str:
         username, password = auth
-        token = f"{username}:{password}".encode("utf-8")
+        token = f"{username}:{password}".encode()
         return "Basic " + base64.b64encode(token).decode("ascii")
 
     @staticmethod
-    def _format_cookie_header(cookies: Dict[str, Any]) -> str:
+    def _format_cookie_header(cookies: dict[str, Any]) -> str:
         pairs = [f"{key}={value}" for key, value in cookies.items()]
         return "; ".join(pairs)
 
     @staticmethod
     def _read_file_payload(file_data: Any) -> bytes:
-        if hasattr(file_data, "read"):
-            payload = file_data.read()
-        else:
-            payload = file_data
+        payload = file_data.read() if hasattr(file_data, "read") else file_data
 
         if isinstance(payload, str):
             return payload.encode("utf-8")
@@ -195,7 +205,7 @@ class Session:
         raise TypeError(f"Unsupported file payload type: {type(payload).__name__}")
 
     @staticmethod
-    def _normalize_form_items(data: Optional[Any]) -> List[Tuple[str, str]]:
+    def _normalize_form_items(data: Any | None) -> list[tuple[str, str]]:
         if data is None:
             return []
         if isinstance(data, dict):
@@ -205,7 +215,7 @@ class Session:
         else:
             raise TypeError("multipart form fields must be dict or sequence of tuples")
 
-        items: List[Tuple[str, str]] = []
+        items: list[tuple[str, str]] = []
         for key, value in iterator:
             if isinstance(value, (list, tuple)):
                 for sub_value in value:
@@ -217,16 +227,18 @@ class Session:
     @classmethod
     def _encode_multipart(
         cls,
-        data: Optional[Any],
-        files: Dict[str, Any],
-        req_headers: Dict[str, str],
+        data: Any | None,
+        files: dict[str, Any],
+        req_headers: dict[str, str],
     ) -> bytes:
         boundary = f"easyget-{uuid4().hex}"
-        lines: List[bytes] = []
+        lines: list[bytes] = []
 
         for key, value in cls._normalize_form_items(data):
-            lines.append(f"--{boundary}\r\n".encode("utf-8"))
-            lines.append(f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode("utf-8"))
+            lines.append(f"--{boundary}\r\n".encode())
+            lines.append(
+                f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode()
+            )
             lines.append(value.encode("utf-8"))
             lines.append(b"\r\n")
 
@@ -241,7 +253,9 @@ class Session:
                 elif len(raw_value) == 3:
                     filename, file_value, content_type = raw_value
                 else:
-                    raise TypeError("file tuple must be (filename, data) or (filename, data, content_type)")
+                    raise TypeError(
+                        "file tuple must be (filename, data) or (filename, data, content_type)"
+                    )
             elif hasattr(raw_value, "name"):
                 filename = os.path.basename(raw_value.name) or field_name
 
@@ -253,40 +267,54 @@ class Session:
             payload = cls._read_file_payload(file_value)
             safe_name = str(filename).replace('"', "")
 
-            lines.append(f"--{boundary}\r\n".encode("utf-8"))
+            lines.append(f"--{boundary}\r\n".encode())
             lines.append(
-                f'Content-Disposition: form-data; name="{field_name}"; filename="{safe_name}"\r\n'.encode("utf-8")
+                f'Content-Disposition: form-data; name="{field_name}"; filename="{safe_name}"\r\n'.encode()
             )
-            lines.append(f"Content-Type: {content_type}\r\n\r\n".encode("utf-8"))
+            lines.append(f"Content-Type: {content_type}\r\n\r\n".encode())
             lines.append(payload)
             lines.append(b"\r\n")
 
-        lines.append(f"--{boundary}--\r\n".encode("utf-8"))
+        lines.append(f"--{boundary}--\r\n".encode())
         req_headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
         return b"".join(lines)
 
     @staticmethod
-    def _normalize_timeout(timeout: TimeoutType) -> Optional[float]:
+    def _split_timeout(timeout: TimeoutType) -> tuple[float | None, float | None]:
+        """Split a timeout into (connect_timeout, read_timeout) pair."""
         if isinstance(timeout, tuple):
             if len(timeout) != 2:
-                raise ValueError("timeout tuple must be (connect_timeout, read_timeout)")
+                raise ValueError(
+                    "timeout tuple must be (connect_timeout, read_timeout)"
+                )
             connect_timeout, read_timeout = timeout
-            if read_timeout is not None:
-                return float(read_timeout)
-            if connect_timeout is not None:
-                return float(connect_timeout)
-            return None
+            return (
+                float(connect_timeout) if connect_timeout is not None else None,
+                float(read_timeout) if read_timeout is not None else None,
+            )
         if timeout is None:
-            return None
-        return float(timeout)
+            return (None, None)
+        return (float(timeout), float(timeout))
+
+    @staticmethod
+    def _apply_read_timeout(resp: Any, read_timeout: float) -> None:
+        """Best-effort read timeout on the underlying socket after connect."""
+        try:
+            fp = getattr(resp, "fp", None)
+            raw = getattr(fp, "raw", None)
+            sock = getattr(raw, "_sock", None)
+            if sock is not None:
+                sock.settimeout(read_timeout)
+        except Exception:
+            pass
 
     @staticmethod
     def _normalize_data(
-        data: Optional[Any],
-        json: Optional[Any],
-        files: Optional[Dict[str, Any]],
-        req_headers: Dict[str, str],
-    ) -> Optional[Union[bytes, bytearray]]:
+        data: Any | None,
+        json: Any | None,
+        files: dict[str, Any] | None,
+        req_headers: dict[str, str],
+    ) -> bytes | bytearray | None:
         if data is not None and json is not None:
             raise TypeError("cannot use both 'data' and 'json' in the same request")
         if json is not None and files is not None:
@@ -308,25 +336,29 @@ class Session:
 
         raise TypeError(f"Unsupported request body type: {type(data).__name__}")
 
-    def request(self, method: str, url: str, 
-                params: Optional[Union[Dict[str, Any], Sequence[Tuple[str, Any]]]] = None,
-                data: Optional[Any] = None,
-                json: Optional[Any] = None,
-                files: Optional[Dict[str, Any]] = None,
-                auth: Optional[Tuple[str, str]] = None,
-                cookies: Optional[Dict[str, Any]] = None,
-                headers: Optional[Dict[str, str]] = None,
-                timeout: TimeoutType = 30,
-                stream: bool = False,
-                allow_redirects: bool = True,
-                verify: Optional[VerifyType] = None,
-                cert: Optional[CertType] = None,
-                proxies: Optional[ProxyType] = None,
-                compressed: bool = False,
-                hooks: Optional[ResponseHookType] = None) -> Response:
+    def request(
+        self,
+        method: str,
+        url: str,
+        params: dict[str, Any] | Sequence[tuple[str, Any]] | None = None,
+        data: Any | None = None,
+        json: Any | None = None,
+        files: dict[str, Any] | None = None,
+        auth: tuple[str, str] | None = None,
+        cookies: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        timeout: TimeoutType = 30,
+        stream: bool = False,
+        allow_redirects: bool = True,
+        verify: VerifyType | None = None,
+        cert: CertType | None = None,
+        proxies: ProxyType | None = None,
+        compressed: bool = False,
+        hooks: ResponseHookType | None = None,
+    ) -> Response:
         method = method.upper()
         url = self._build_url(url, params=params)
-            
+
         req_headers = self.headers.copy()
         if headers:
             req_headers.update(headers)
@@ -337,8 +369,10 @@ class Session:
         if cookies:
             req_headers["Cookie"] = self._format_cookie_header(cookies)
         req_data = self._normalize_data(data, json, files, req_headers)
-        normalized_timeout = self._normalize_timeout(timeout)
-        req = urllib.request.Request(url, data=req_data, headers=req_headers, method=method)
+        connect_timeout, read_timeout = self._split_timeout(timeout)
+        req = urllib.request.Request(  # noqa: S310
+            url, data=req_data, headers=req_headers, method=method
+        )
         resolved_verify = self._default_verify if verify is None else verify
         resolved_cert = self._default_cert if cert is None else cert
         resolved_proxies = self._default_proxies if proxies is None else proxies
@@ -356,68 +390,95 @@ class Session:
                 cert=resolved_cert,
                 proxies=resolved_proxies,
             )
-        
+
         try:
             # We must be careful with 'with' if we want to stream
-            resp = opener.open(req, timeout=normalized_timeout)
-            response = Response(status_code=resp.status, headers=dict(resp.headers), url=url)
+            resp = opener.open(
+                req,
+                timeout=connect_timeout
+                if connect_timeout is not None
+                else read_timeout,
+            )
+            if read_timeout is not None:
+                self._apply_read_timeout(resp, read_timeout)
+            response = Response(
+                status_code=resp.status, headers=dict(resp.headers), url=url
+            )
             response.set_auto_decompress(compressed)
-            
+
             if stream:
                 response._stream_response = resp
                 self._open_responses.add(response)
-                response.add_close_callback(lambda: self._open_responses.discard(response))
+                response.add_close_callback(
+                    lambda: self._open_responses.discard(response)
+                )
             else:
                 with resp:
                     response._content = resp.read()
             return self._run_response_hooks(
                 response,
                 hooks=hooks,
-                request_meta={"method": method, "url": url, "status_code": response.status_code},
+                request_meta={
+                    "method": method,
+                    "url": url,
+                    "status_code": response.status_code,
+                },
             )
         except urllib.error.HTTPError as e:
             # Even on error, we might want the response object
+            if read_timeout is not None:
+                self._apply_read_timeout(e, read_timeout)
             response = Response(status_code=e.code, headers=dict(e.headers), url=url)
             response.set_auto_decompress(compressed)
             if stream:
                 response._stream_response = e
                 self._open_responses.add(response)
-                response.add_close_callback(lambda: self._open_responses.discard(response))
+                response.add_close_callback(
+                    lambda: self._open_responses.discard(response)
+                )
             else:
                 response._content = e.read()
             return self._run_response_hooks(
                 response,
                 hooks=hooks,
-                request_meta={"method": method, "url": url, "status_code": response.status_code},
+                request_meta={
+                    "method": method,
+                    "url": url,
+                    "status_code": response.status_code,
+                },
             )
         except urllib.error.URLError as e:
             from .exceptions import RequestError
+
             raise RequestError(
                 f"Request failed: {e}",
                 hint="Check network connectivity, DNS, proxy, and TLS settings.",
-                context={"url": url, "reason": str(e.reason) if hasattr(e, "reason") else str(e)},
+                context={
+                    "url": url,
+                    "reason": str(e.reason) if hasattr(e, "reason") else str(e),
+                },
             )
 
     def get(self, url: str, **kwargs) -> Response:
-        return self.request('GET', url, **kwargs)
+        return self.request("GET", url, **kwargs)
 
     def post(self, url: str, data: Any = None, **kwargs) -> Response:
-        return self.request('POST', url, data=data, **kwargs)
+        return self.request("POST", url, data=data, **kwargs)
 
     def head(self, url: str, **kwargs) -> Response:
-        return self.request('HEAD', url, **kwargs)
+        return self.request("HEAD", url, **kwargs)
 
     def put(self, url: str, data: Any = None, **kwargs) -> Response:
-        return self.request('PUT', url, data=data, **kwargs)
+        return self.request("PUT", url, data=data, **kwargs)
 
     def patch(self, url: str, data: Any = None, **kwargs) -> Response:
-        return self.request('PATCH', url, data=data, **kwargs)
+        return self.request("PATCH", url, data=data, **kwargs)
 
     def delete(self, url: str, **kwargs) -> Response:
-        return self.request('DELETE', url, **kwargs)
+        return self.request("DELETE", url, **kwargs)
 
     def options(self, url: str, **kwargs) -> Response:
-        return self.request('OPTIONS', url, **kwargs)
+        return self.request("OPTIONS", url, **kwargs)
 
     def close(self):
         for response in list(self._open_responses):
@@ -430,6 +491,7 @@ class Session:
     def __exit__(self, exc_type, exc, tb):
         self.close()
         return False
+
 
 def request(method: str, url: str, **kwargs) -> Response:
     stream = bool(kwargs.get("stream"))
@@ -447,23 +509,30 @@ def request(method: str, url: str, **kwargs) -> Response:
     response.add_close_callback(session.close)
     return response
 
+
 def get(url: str, **kwargs) -> Response:
     return request("GET", url, **kwargs)
+
 
 def post(url: str, **kwargs) -> Response:
     return request("POST", url, **kwargs)
 
+
 def put(url: str, **kwargs) -> Response:
     return request("PUT", url, **kwargs)
+
 
 def patch(url: str, **kwargs) -> Response:
     return request("PATCH", url, **kwargs)
 
+
 def delete(url: str, **kwargs) -> Response:
     return request("DELETE", url, **kwargs)
 
+
 def head(url: str, **kwargs) -> Response:
     return request("HEAD", url, **kwargs)
+
 
 def options(url: str, **kwargs) -> Response:
     return request("OPTIONS", url, **kwargs)
