@@ -58,6 +58,6 @@
 - M6: Add benchmark + observability profiles for AI-token-efficient traces.
 
 ## Quality Gates
-- `python -m py_compile easyget/*.py test_*.py`
+- `python -m py_compile easyget/*.py tests/*.py`
 - `python -m unittest -v`
 - Every functional change is committed with focused scope.
