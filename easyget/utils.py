@@ -160,13 +160,27 @@ def parse_speed(speed_str: str) -> int | None:
         return None
 
 
+# Device names that are invalid as filenames on Windows (checked against the stem).
+_WINDOWS_RESERVED_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{i}" for i in range(1, 10)}
+    | {f"LPT{i}" for i in range(1, 10)}
+)
+
+
 def _sanitize_filename(name: str) -> str | None:
     """
     Reduce a server-supplied filename to a safe basename.
     서버가 보낸 파일명을 안전한 basename으로 정제합니다.
     """
     name = posixpath.basename(name.replace("\\", "/")).strip()
-    if name in ("", ".", ".."):
+    stem = name.split(".", 1)[0].upper()
+    if (
+        not name
+        or name in (".", "..")
+        or stem in _WINDOWS_RESERVED_NAMES
+        or any(ord(c) < 32 or ord(c) == 127 for c in name)
+    ):
         return None
     return name
 

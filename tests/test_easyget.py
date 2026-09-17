@@ -116,6 +116,18 @@ class TestEasyGet(unittest.TestCase):
             get_filename_from_headers(headers, "http://example.com/x"), "report.zip"
         )
 
+    def test_filename_from_headers_rejects_reserved_and_control_names(self):
+        headers = {"Content-Disposition": 'attachment; filename="CON"'}
+        self.assertEqual(
+            get_filename_from_headers(headers, "http://example.com/safe.txt"),
+            "safe.txt",
+        )
+        headers = {"Content-Disposition": 'attachment; filename="bad\r\nname.txt"'}
+        self.assertEqual(
+            get_filename_from_headers(headers, "http://example.com/safe.txt"),
+            "safe.txt",
+        )
+
     @patch("os.remove")
     @patch("os.replace")
     @patch("os.path.exists", return_value=True)
