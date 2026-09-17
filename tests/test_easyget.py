@@ -13,6 +13,8 @@ from easyget.utils import (
     _CONFIRMED_OVERWRITES,
     ProgressBar,
     SpeedLimiter,
+    get_filename_from_headers,
+    get_filename_from_url,
     parse_speed,
     safe_rename,
     should_download_output,
@@ -76,10 +78,43 @@ class TestEasyGet(unittest.TestCase):
         with patch("time.sleep") as mock_sleep:
             limiter = SpeedLimiter(100)  # 100 bytes/sec
             limiter.start_time = 1000.0
-            with patch("time.time", return_value=1000.1):
+            with patch("time.monotonic", return_value=1000.1):
                 limiter.wait(50)  # expected 0.5s. elapsed 0.1s. sleep 0.4s.
                 args, _ = mock_sleep.call_args
                 self.assertAlmostEqual(args[0], 0.4, places=5)
+
+    def test_filename_from_url_uses_index_html_fallback(self):
+        self.assertEqual(get_filename_from_url("http://example.com/dir/"), "index.html")
+        self.assertEqual(get_filename_from_url("http://example.com"), "index.html")
+        self.assertEqual(
+            get_filename_from_url("http://example.com/a/b.zip?x=1"), "b.zip"
+        )
+
+    def test_filename_from_headers_supports_rfc5987_star(self):
+        headers = {
+            "Content-Disposition": (
+                "attachment; filename*=UTF-8''%ED%95%9C%EA%B8%80.zip"
+            )
+        }
+        self.assertEqual(
+            get_filename_from_headers(headers, "http://example.com/x"), "한글.zip"
+        )
+
+    def test_filename_from_headers_strips_path_traversal(self):
+        headers = {"Content-Disposition": 'attachment; filename="../../etc/passwd"'}
+        self.assertEqual(
+            get_filename_from_headers(headers, "http://example.com/x"), "passwd"
+        )
+        headers = {"Content-Disposition": 'attachment; filename="..\\..\\evil.exe"'}
+        self.assertEqual(
+            get_filename_from_headers(headers, "http://example.com/x"), "evil.exe"
+        )
+
+    def test_filename_from_headers_stops_at_semicolon(self):
+        headers = {"Content-Disposition": "attachment; filename=report.zip; other=x"}
+        self.assertEqual(
+            get_filename_from_headers(headers, "http://example.com/x"), "report.zip"
+        )
 
     @patch("os.remove")
     @patch("os.replace")
