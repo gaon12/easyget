@@ -125,37 +125,45 @@ class TestCLI(unittest.TestCase):
         mock_session_cls.return_value.__enter__.return_value = mock_session
 
         out = io.StringIO()
-        argv = [
-            "easyget",
-            "--json",
-            "-X",
-            "GET",
-            "-L",
-            "--proxy",
-            "http://proxy.local:8080",
-            "--cacert",
-            "/tmp/ca.pem",
-            "--cert",
-            "/tmp/client.crt",
-            "--key",
-            "/tmp/client.key",
-            "--compressed",
-            "https://example.com",
-        ]
-        with (
-            patch.object(sys, "argv", argv),
-            redirect_stdout(out),
-            self.assertRaises(SystemExit) as ctx,
-        ):
-            cli.main()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ca = os.path.join(tmpdir, "ca.pem")
+            crt = os.path.join(tmpdir, "client.crt")
+            key = os.path.join(tmpdir, "client.key")
+            for p in (ca, crt, key):
+                with open(p, "wb") as f:
+                    f.write(b"pem")
+
+            argv = [
+                "easyget",
+                "--json",
+                "-X",
+                "GET",
+                "-L",
+                "--proxy",
+                "http://proxy.local:8080",
+                "--cacert",
+                ca,
+                "--cert",
+                crt,
+                "--key",
+                key,
+                "--compressed",
+                "https://example.com",
+            ]
+            with (
+                patch.object(sys, "argv", argv),
+                redirect_stdout(out),
+                self.assertRaises(SystemExit) as ctx,
+            ):
+                cli.main()
 
         self.assertEqual(ctx.exception.code, 0)
         payload = json.loads(out.getvalue())
         self.assertTrue(payload["ok"])
         kwargs = mock_session.request.call_args.kwargs
         self.assertTrue(kwargs["allow_redirects"])
-        self.assertEqual(kwargs["verify"], "/tmp/ca.pem")
-        self.assertEqual(kwargs["cert"], ("/tmp/client.crt", "/tmp/client.key"))
+        self.assertEqual(kwargs["verify"], ca)
+        self.assertEqual(kwargs["cert"], (crt, key))
         self.assertEqual(kwargs["proxies"], "http://proxy.local:8080")
         self.assertTrue(kwargs["compressed"])
 

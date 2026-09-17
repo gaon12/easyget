@@ -474,6 +474,17 @@ def run_request_mode(args: argparse.Namespace, headers: dict[str, str]) -> int:
         raise ValueError("--key requires --cert")
     if args.insecure and args.cacert:
         raise ValueError("Cannot use --insecure and --cacert together")
+    if args.proxy:
+        proxy_scheme = urllib.parse.urlsplit(args.proxy).scheme.lower()
+        if proxy_scheme not in ("http", "https"):
+            raise ValueError("--proxy must be an http:// or https:// URL")
+    for opt_value, opt_name in (
+        (args.cacert, "--cacert"),
+        (args.cert, "--cert"),
+        (args.key, "--key"),
+    ):
+        if opt_value and not os.path.exists(opt_value):
+            raise ValueError(f"{opt_name} file not found: {opt_value}")
 
     form_data = None
     form_files = None
@@ -632,7 +643,13 @@ def main():
         for h in args.header:
             if ":" in h:
                 key, value = h.split(":", 1)
-                headers[key.strip()] = value.strip()
+                # Strip CR/LF so a header value can't inject extra header lines.
+                safe_key = key.strip().replace("\r", "").replace("\n", "")
+                safe_value = value.strip().replace("\r", "").replace("\n", "")
+                if safe_key:
+                    headers[safe_key] = safe_value
+                else:
+                    logger.warning(f"Ignoring malformed --header (empty name): {h}")
             else:
                 logger.warning(
                     f"Ignoring malformed --header (expected 'Key: Value'): {h}"
