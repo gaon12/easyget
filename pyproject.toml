@@ -7,7 +7,7 @@ name = "easyget"
 dynamic = ["version"]
 description = "Fast, easy-to-use multi-platform file downloader with zero dependencies"
 authors = [
-    { name = "easyget-cli", email = "easyget@google.com" }
+    { name = "easyget" }
 ]
 readme = "README.md"
 license = "MIT"
