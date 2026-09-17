@@ -343,6 +343,100 @@ class TestCLI(unittest.TestCase):
         self.assertEqual(kwargs["retry_backoff"], "linear")
         self.assertTrue(kwargs["timestamping"])
 
+    def test_version_flag_prints_version(self):
+        out = io.StringIO()
+        with (
+            patch.object(sys, "argv", ["easyget", "--version"]),
+            redirect_stdout(out),
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            cli.main()
+
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertIn(easyget.__version__, out.getvalue())
+
+    def test_invalid_multi_rejected_with_usage_error(self):
+        with (
+            patch.object(
+                sys, "argv", ["easyget", "--multi", "0", "http://example.com"]
+            ),
+            redirect_stderr(io.StringIO()),
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            cli.main()
+
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_invalid_max_speed_rejected(self):
+        with (
+            patch.object(
+                sys,
+                "argv",
+                ["easyget", "--max-speed", "bogus", "http://example.com/f.zip"],
+            ),
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            cli.main()
+
+        self.assertEqual(ctx.exception.code, 2)
+
+    @patch("easyget.cli.Session")
+    def test_request_mode_data_binary_reads_file(self, mock_session_cls):
+        response = easyget.Response(
+            status_code=200, headers={}, url="https://example.com"
+        )
+        response._content = b"ok"
+        mock_session = MagicMock()
+        mock_session.request.return_value = response
+        mock_session_cls.return_value.__enter__.return_value = mock_session
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file_path = os.path.join(tmpdir, "payload.bin")
+            with open(file_path, "wb") as f:
+                f.write(b"\x00\x01raw")
+
+            out = io.StringIO()
+            argv = [
+                "easyget",
+                "--json",
+                "--data-binary",
+                f"@{file_path}",
+                "https://example.com",
+            ]
+            with (
+                patch.object(sys, "argv", argv),
+                redirect_stdout(out),
+                self.assertRaises(SystemExit) as ctx,
+            ):
+                cli.main()
+
+        self.assertEqual(ctx.exception.code, 0)
+        kwargs = mock_session.request.call_args.kwargs
+        self.assertEqual(kwargs["method"], "POST")
+        self.assertEqual(kwargs["data"], b"\x00\x01raw")
+
+    @patch("easyget.cli.Session")
+    def test_request_mode_data_binary_conflicts_with_data(self, mock_session_cls):
+        out = io.StringIO()
+        argv = [
+            "easyget",
+            "--json",
+            "-d",
+            "x=1",
+            "--data-binary",
+            "raw",
+            "https://example.com",
+        ]
+        with (
+            patch.object(sys, "argv", argv),
+            redirect_stdout(out),
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            cli.main()
+
+        self.assertEqual(ctx.exception.code, 2)
+        mock_session_cls.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

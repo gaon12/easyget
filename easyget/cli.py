@@ -7,13 +7,14 @@ import sys
 import urllib.parse
 from typing import Any
 
+from . import __version__
 from .diagnostics import error_payload
 from .downloader import download_file
 from .exceptions import EasyGetError
 from .input_parser import parse_file_list
 from .logging_utils import setup_logging
 from .session import Session
-from .utils import ProgressBar, get_filename_from_url
+from .utils import ProgressBar, get_filename_from_url, parse_speed
 from .wildcard import expand_wildcard_url
 
 logger = logging.getLogger(__name__)
@@ -84,9 +85,43 @@ def _exit_code_for_error(exc: Exception) -> int:
     return EXIT_UNKNOWN
 
 
+def _positive_int(value: str) -> int:
+    ivalue = int(value)
+    if ivalue < 1:
+        raise argparse.ArgumentTypeError(f"expected a positive integer, got {value}")
+    return ivalue
+
+
+def _nonnegative_int(value: str) -> int:
+    ivalue = int(value)
+    if ivalue < 0:
+        raise argparse.ArgumentTypeError(
+            f"expected a non-negative integer, got {value}"
+        )
+    return ivalue
+
+
+def _nonnegative_float(value: str) -> float:
+    fvalue = float(value)
+    if fvalue < 0:
+        raise argparse.ArgumentTypeError(f"expected a non-negative number, got {value}")
+    return fvalue
+
+
+def _positive_float(value: str) -> float:
+    fvalue = float(value)
+    if fvalue <= 0:
+        raise argparse.ArgumentTypeError(f"expected a positive number, got {value}")
+    return fvalue
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="easyget: wget/curl compatible file downloader (Python 3.12+ Zero-dependency)"
+        prog="easyget",
+        description="easyget: wget/curl compatible file downloader (Python 3.12+ Zero-dependency)",
+    )
+    parser.add_argument(
+        "-V", "--version", action="version", version=f"%(prog)s {__version__}"
     )
     parser.add_argument(
         "input", help="URL to download or a file path (txt, csv, tsv) containing URLs"
@@ -102,21 +137,24 @@ def parse_args():
     )
     parser.add_argument(
         "--multi",
-        type=int,
+        type=_positive_int,
         help="Number of threads (default: 4 in accurate mode, 1 in fast mode)",
     )
     parser.add_argument(
-        "--retry", type=int, default=3, help="Number of retries on failure (default: 3)"
+        "--retry",
+        type=_nonnegative_int,
+        default=3,
+        help="Number of retries on failure (default: 3)",
     )
     parser.add_argument(
         "--retry-delay",
-        type=float,
+        type=_nonnegative_float,
         default=1.0,
         help="Base retry delay in seconds (default: 1.0)",
     )
     parser.add_argument(
         "--retry-max-delay",
-        type=float,
+        type=_nonnegative_float,
         default=30.0,
         help="Maximum retry delay in seconds (default: 30)",
     )
@@ -176,6 +214,10 @@ def parse_args():
     )
     parser.add_argument(
         "-d", "--data", dest="request_data", help="HTTP request body for request mode"
+    )
+    parser.add_argument(
+        "--data-binary",
+        help="Raw binary request body; @path reads the body from a file",
     )
     parser.add_argument("--json-data", help="JSON request body string for request mode")
     parser.add_argument(
@@ -244,7 +286,7 @@ def parse_args():
     )
     parser.add_argument(
         "--timeout",
-        type=float,
+        type=_positive_float,
         default=30.0,
         help="HTTP timeout (seconds) for request mode",
     )
@@ -257,6 +299,7 @@ def is_request_mode(args: argparse.Namespace) -> bool:
         [
             args.request_method,
             args.request_data is not None,
+            args.data_binary is not None,
             args.json_data is not None,
             bool(args.data_urlencode),
             bool(args.form),
@@ -367,6 +410,32 @@ def _parse_form_entries(
     return data_fields, file_fields
 
 
+def _download_kwargs(
+    args: argparse.Namespace,
+    headers: dict[str, str],
+    threads: int,
+    show_progress: bool,
+    position: int,
+) -> dict[str, Any]:
+    return {
+        "resume": args.resume,
+        "threads": threads,
+        "max_speed": args.max_speed,
+        "headers": headers,
+        "progress_position": position,
+        "ignore_cache": args.no_cache,
+        "mode": args.mode,
+        "force": args.force,
+        "skip_existing": args.skip_existing,
+        "retries": args.retry,
+        "show_progress": show_progress,
+        "retry_delay": args.retry_delay,
+        "retry_backoff": args.retry_backoff,
+        "retry_max_delay": args.retry_max_delay,
+        "timestamping": args.timestamping,
+    }
+
+
 def run_request_mode(args: argparse.Namespace, headers: dict[str, str]) -> int:
     if os.path.exists(args.input) and args.input.lower().endswith(
         (".txt", ".csv", ".tsv")
@@ -385,6 +454,7 @@ def run_request_mode(args: argparse.Namespace, headers: dict[str, str]) -> int:
         method = "HEAD"
     elif (
         args.request_data is not None
+        or args.data_binary is not None
         or args.json_data is not None
         or args.data_urlencode
         or args.form
@@ -418,7 +488,27 @@ def run_request_mode(args: argparse.Namespace, headers: dict[str, str]) -> int:
             )
         form_data, form_files = _parse_form_entries(args.form)
 
-    request_data = args.request_data
+    request_data: str | bytes | None = args.request_data
+    if args.data_binary is not None:
+        if (
+            args.request_data is not None
+            or args.data_urlencode
+            or json_payload is not None
+            or args.form
+        ):
+            raise ValueError(
+                "--data-binary cannot be combined with "
+                "--data/--data-urlencode/--json-data/--form"
+            )
+        if args.data_binary.startswith("@"):
+            binary_path = args.data_binary[1:]
+            if not os.path.exists(binary_path):
+                raise ValueError(f"--data-binary file not found: {binary_path}")
+            with open(binary_path, "rb") as f:
+                request_data = f.read()
+        else:
+            request_data = args.data_binary
+
     if args.data_urlencode:
         encoded = _parse_data_urlencode(args.data_urlencode)
         request_data = f"{request_data}&{encoded}" if request_data else encoded
@@ -426,6 +516,9 @@ def run_request_mode(args: argparse.Namespace, headers: dict[str, str]) -> int:
 
     verify = None
     if args.insecure:
+        logger.warning(
+            "TLS verification is disabled (-k/--insecure). Connections are not secure."
+        )
         verify = False
     elif args.cacert:
         verify = args.cacert
@@ -490,9 +583,25 @@ def run_request_mode(args: argparse.Namespace, headers: dict[str, str]) -> int:
         return EXIT_OK
 
     if args.output_select in {"body", "all"} and not args.output and body_bytes:
-        sys.stdout.write(response.text)
-        if not response.text.endswith("\n"):
-            sys.stdout.write("\n")
+        content_type = response.headers.get("Content-Type", "")
+        is_textual = content_type.startswith("text/") or any(
+            marker in content_type
+            for marker in (
+                "json",
+                "xml",
+                "javascript",
+                "x-www-form-urlencoded",
+                "charset",
+            )
+        )
+        if is_textual:
+            sys.stdout.write(response.text)
+            if not response.text.endswith("\n"):
+                sys.stdout.write("\n")
+        else:
+            # Binary bodies go to stdout raw so they survive shell redirection.
+            sys.stdout.buffer.write(body_bytes)
+            sys.stdout.buffer.flush()
     return EXIT_OK
 
 
@@ -524,10 +633,17 @@ def main():
             if ":" in h:
                 key, value = h.split(":", 1)
                 headers[key.strip()] = value.strip()
+            else:
+                logger.warning(
+                    f"Ignoring malformed --header (expected 'Key: Value'): {h}"
+                )
     if args.head_only:
         args.request_method = "HEAD"
 
     try:
+        if args.max_speed and parse_speed(args.max_speed) is None:
+            raise ValueError(f"Invalid --max-speed value: {args.max_speed}")
+
         if is_request_mode(args):
             sys.exit(run_request_mode(args, headers))
 
@@ -563,29 +679,24 @@ def main():
                 )
 
                 try:
-                    download_file(
+                    info = download_file(
                         url,
                         dest,
-                        resume=args.resume,
-                        threads=threads,
-                        max_speed=args.max_speed,
-                        headers=headers,
-                        progress_position=1,
-                        ignore_cache=args.no_cache,
-                        mode=args.mode,
-                        force=args.force,
-                        skip_existing=args.skip_existing,
-                        retries=args.retry,
-                        show_progress=show_progress,
-                        retry_delay=args.retry_delay,
-                        retry_backoff=args.retry_backoff,
-                        retry_max_delay=args.retry_max_delay,
-                        timestamping=args.timestamping,
+                        **_download_kwargs(
+                            args, headers, threads, show_progress, position=1
+                        ),
                     )
                     success_count += 1
-                    results.append(
-                        {"url": url, "output": dest, "status": "success", "ok": True}
-                    )
+                    item = {
+                        "url": url,
+                        "output": dest,
+                        "status": "success",
+                        "ok": True,
+                    }
+                    if isinstance(info, dict):
+                        item["bytes"] = info.get("bytes")
+                        item["skipped"] = info.get("skipped")
+                    results.append(item)
                 except Exception as e:
                     if not args.json:
                         logger.error(f"\nFailed to download {url}: {e}")
@@ -615,30 +726,25 @@ def main():
                 output = os.path.join(args.output_dir, output)
 
             try:
-                download_file(
+                info = download_file(
                     url,
                     output,
-                    resume=args.resume,
-                    threads=threads,
-                    max_speed=args.max_speed,
-                    headers=headers,
-                    progress_position=0,
-                    ignore_cache=args.no_cache,
-                    mode=args.mode,
-                    force=args.force,
-                    skip_existing=args.skip_existing,
-                    retries=args.retry,
-                    show_progress=show_progress,
-                    retry_delay=args.retry_delay,
-                    retry_backoff=args.retry_backoff,
-                    retry_max_delay=args.retry_max_delay,
-                    timestamping=args.timestamping,
+                    **_download_kwargs(
+                        args, headers, threads, show_progress, position=0
+                    ),
                 )
                 if args.json:
+                    result = {
+                        "url": url,
+                        "output": output,
+                        "status": "success",
+                        "ok": True,
+                    }
+                    if isinstance(info, dict):
+                        result["bytes"] = info.get("bytes")
+                        result["skipped"] = info.get("skipped")
                     payload = _render_success_payload(
-                        "download",
-                        {"url": url, "output": output, "status": "success", "ok": True},
-                        ai_mode=args.ai,
+                        "download", result, ai_mode=args.ai
                     )
                     _print_payload(payload, ai_mode=args.ai)
             except Exception as e:
