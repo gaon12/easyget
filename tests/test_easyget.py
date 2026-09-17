@@ -67,7 +67,10 @@ class TestEasyGet(unittest.TestCase):
         error_event = threading.Event()
         pbar = MagicMock()
 
-        with patch("builtins.open", mock_open()):
+        with (
+            patch("builtins.open", mock_open()),
+            self.assertRaises(IntegrityError),
+        ):
             download_range(
                 "http://example.com", 0, 100, {}, "dummy.part", pbar, None, error_event
             )

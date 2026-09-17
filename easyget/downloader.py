@@ -5,6 +5,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC
 
 from .exceptions import DownloadError, EasyGetError, IntegrityError
@@ -162,6 +163,7 @@ def download_range(
     except Exception as e:
         logger.error(f"Range download failed for {url} ({start}-{end}): {e}")
         error_event.set()
+        raise
     finally:
         if owns_session:
             session.close()
@@ -344,11 +346,12 @@ def download_file(
                         )
                         range_list.append((start, end))
 
-                    thread_pool = []
-                    for start, end in range_list:
-                        t = threading.Thread(
-                            target=download_range,
-                            args=(
+                    # ThreadPoolExecutor propagates the original worker exception
+                    # through future.result(); error_event makes peers abort early.
+                    with ThreadPoolExecutor(max_workers=attempt_threads) as pool:
+                        futures = [
+                            pool.submit(
+                                download_range,
                                 url,
                                 start,
                                 end,
@@ -358,15 +361,11 @@ def download_file(
                                 limiter,
                                 error_event,
                                 session,
-                            ),
-                        )
-                        thread_pool.append(t)
-                        t.start()
-
-                    for t in thread_pool:
-                        t.join()
-                    if error_event.is_set():
-                        raise DownloadError(f"One or more threads failed for {url}")
+                            )
+                            for start, end in range_list
+                        ]
+                        for future in futures:
+                            future.result()
 
                 if pbar:
                     pbar.close()
